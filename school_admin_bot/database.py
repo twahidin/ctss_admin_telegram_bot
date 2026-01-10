@@ -4,8 +4,8 @@ import random
 import string
 from datetime import datetime, date
 from pathlib import Path
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from config import DATABASE_URL, STORAGE_PATH, DAILY_CODE_LENGTH
 
 ANIMALS = [
@@ -31,7 +31,7 @@ class Database:
 
     def get_connection(self):
         """Get database connection"""
-        return psycopg2.connect(self.db_url)
+        return psycopg.connect(self.db_url)
 
     def init_database(self):
         """Initialize database tables"""
@@ -115,7 +115,7 @@ class Database:
     def get_user(self, telegram_id):
         """Get user by telegram ID"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         cursor.execute(
             """
@@ -165,7 +165,7 @@ class Database:
     def get_all_users(self):
         """Get all users"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         cursor.execute(
             """
@@ -227,7 +227,7 @@ class Database:
     def get_today_entries(self):
         """Get all entries for today"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         today = date.today()
 
@@ -251,7 +251,7 @@ class Database:
     def get_user_uploads_today(self, telegram_id):
         """Get user's uploads for today"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         today = date.today()
 
@@ -417,7 +417,7 @@ class Database:
     def get_daily_code(self):
         """Get today's code (generate if doesn't exist)"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         today = date.today()
 
@@ -443,7 +443,7 @@ class Database:
     def get_stats(self):
         """Get bot usage statistics"""
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor = conn.cursor(row_factory=dict_row)
 
         # Count users by role
         cursor.execute(

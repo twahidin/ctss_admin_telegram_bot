@@ -272,6 +272,50 @@ class Database:
 
         return [dict(entry) for entry in entries]
 
+    def delete_entry_by_id(self, entry_id, telegram_id):
+        """Delete a specific entry by ID (only if owned by user)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            DELETE FROM daily_entries 
+            WHERE id = %s AND uploaded_by = %s AND date = %s
+        """,
+            (entry_id, telegram_id, today),
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return deleted
+
+    def delete_all_user_uploads_today(self, telegram_id):
+        """Delete all of user's uploads for today"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            DELETE FROM daily_entries 
+            WHERE uploaded_by = %s AND date = %s
+        """,
+            (telegram_id, today),
+        )
+
+        deleted_count = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return deleted_count
+
     def purge_old_data(self):
         """Delete entries older than today and generate new code"""
         conn = self.get_connection()

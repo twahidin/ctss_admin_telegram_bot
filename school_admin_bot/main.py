@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Conversation states
 SELECTING_TAG, AWAITING_CONTENT, AWAITING_DETAILS, AWAITING_CODE = range(4)
 AWAITING_USER_ID, AWAITING_ROLE = range(4, 6)
+UPLOAD_MENU, PRIVACY_WARNING, SELECTING_UPLOAD_TO_DELETE = range(6, 9)
 
 # Initialize database
 db = Database()
@@ -234,7 +235,7 @@ If you can't read something clearly, note what you can see."""
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
     async def upload_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start upload process"""
+        """Start upload process - show initial menu"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -242,23 +243,233 @@ If you can't read something clearly, note what you can see."""
             await update.message.reply_text("❌ You don't have upload permissions.")
             return ConversationHandler.END
 
-        # Show tag selection
-        tag_buttons = [[f"{i+1}️⃣ {tag}"] for i, tag in enumerate(TAGS)]
-        reply_markup = ReplyKeyboardMarkup(tag_buttons, one_time_keyboard=True)
+        # Check user's uploads count today
+        user_uploads = db.get_user_uploads_today(user_id)
+        upload_count = len(user_uploads)
+
+        # Build menu buttons
+        buttons = [
+            [InlineKeyboardButton("📤 Upload New Information", callback_data="upload_new")],
+        ]
+        
+        # Only show remove options if user has uploads
+        if upload_count > 0:
+            buttons.append([InlineKeyboardButton(f"🗑️ Remove One Upload ({upload_count} total)", callback_data="upload_remove_one")])
+            buttons.append([InlineKeyboardButton("🗑️ Remove All My Uploads", callback_data="upload_remove_all")])
+        
+        buttons.append([InlineKeyboardButton("❌ Exit", callback_data="upload_exit")])
+        
+        keyboard = InlineKeyboardMarkup(buttons)
 
         await update.message.reply_text(
-            "📤 *UPLOAD INFORMATION*\n\n"
-            "Select a category by sending the number:",
+            "📤 *UPLOAD MENU*\n\n"
+            f"You have *{upload_count}* upload(s) today.\n\n"
+            "What would you like to do?",
             parse_mode="Markdown",
-            reply_markup=reply_markup,
+            reply_markup=keyboard,
         )
 
-        return SELECTING_TAG
+        return UPLOAD_MENU
+
+    async def handle_upload_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle upload menu selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        choice = query.data
+        
+        if choice == "upload_exit":
+            await query.edit_message_text("👋 Upload cancelled. Come back anytime!")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        elif choice == "upload_new":
+            # Show privacy warning before proceeding
+            buttons = [
+                [InlineKeyboardButton("✅ I Agree - Continue", callback_data="privacy_agree")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="privacy_cancel")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            await query.edit_message_text(
+                "⚠️ *IMPORTANT NOTICE*\n\n"
+                "Before uploading, please be aware:\n\n"
+                "🔒 *DO NOT* upload sensitive or confidential information such as:\n"
+                "• Personal NRIC/IC numbers\n"
+                "• Home addresses\n"
+                "• Medical information\n"
+                "• Financial details\n"
+                "• Private phone numbers\n\n"
+                "📅 *All uploaded data will be automatically deleted after ONE DAY.*\n\n"
+                "By clicking 'I Agree', you confirm that your upload does not contain sensitive or confidential information.\n\n"
+                "Do you agree to proceed?",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return PRIVACY_WARNING
+        
+        elif choice == "upload_remove_one":
+            # Show list of user's uploads to select from
+            user_uploads = db.get_user_uploads_today(user_id)
+            
+            if not user_uploads:
+                await query.edit_message_text("📭 You have no uploads to remove.")
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            buttons = []
+            for entry in user_uploads:
+                entry_id = entry["id"]
+                tag = entry["tag"]
+                timestamp = entry["timestamp"]
+                content_type = entry["content"]["type"]
+                
+                label = f"🗑️ [{tag}] {content_type} @ {timestamp}"
+                buttons.append([InlineKeyboardButton(label, callback_data=f"delete_entry_{entry_id}")])
+            
+            buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="delete_cancel")])
+            
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            await query.edit_message_text(
+                "🗑️ *SELECT UPLOAD TO REMOVE*\n\n"
+                "Choose which upload to delete:",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return SELECTING_UPLOAD_TO_DELETE
+        
+        elif choice == "upload_remove_all":
+            # Confirm removal of all uploads
+            buttons = [
+                [InlineKeyboardButton("✅ Yes, Remove All", callback_data="confirm_remove_all")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_remove_all")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            user_uploads = db.get_user_uploads_today(user_id)
+            count = len(user_uploads)
+            
+            await query.edit_message_text(
+                f"⚠️ *CONFIRM DELETION*\n\n"
+                f"Are you sure you want to remove *ALL {count}* of your uploads from today?\n\n"
+                f"This action cannot be undone.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return UPLOAD_MENU
+        
+        elif choice == "confirm_remove_all":
+            deleted_count = db.delete_all_user_uploads_today(user_id)
+            await query.edit_message_text(f"✅ Removed *{deleted_count}* upload(s).", parse_mode="Markdown")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        elif choice == "cancel_remove_all":
+            await query.edit_message_text("👍 Deletion cancelled.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        return UPLOAD_MENU
+
+    async def handle_privacy_warning(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle privacy warning response"""
+        query = update.callback_query
+        await query.answer()
+        
+        choice = query.data
+        
+        if choice == "privacy_cancel":
+            await query.edit_message_text("👋 Upload cancelled. No information was uploaded.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        elif choice == "privacy_agree":
+            # Proceed to tag selection
+            tag_buttons = [[f"{i+1}️⃣ {tag}"] for i, tag in enumerate(TAGS)]
+            tag_buttons.append(["❌ Cancel"])
+            reply_markup = ReplyKeyboardMarkup(tag_buttons, one_time_keyboard=True)
+            
+            await query.edit_message_text("✅ Thank you for agreeing. Proceeding to category selection...")
+            
+            await query.message.reply_text(
+                "📤 *SELECT CATEGORY*\n\n"
+                "Choose a category for your upload:",
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+            return SELECTING_TAG
+        
+        return PRIVACY_WARNING
+
+    async def handle_delete_entry(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle selection of entry to delete"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        choice = query.data
+        
+        if choice == "delete_cancel":
+            await query.edit_message_text("👍 Deletion cancelled.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        elif choice.startswith("delete_entry_"):
+            entry_id = int(choice.replace("delete_entry_", ""))
+            
+            # Confirm before deleting
+            context.user_data["pending_delete_id"] = entry_id
+            
+            buttons = [
+                [InlineKeyboardButton("✅ Yes, Delete", callback_data="confirm_delete_single")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_delete_single")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            await query.edit_message_text(
+                "⚠️ *CONFIRM DELETION*\n\n"
+                "Are you sure you want to delete this upload?\n\n"
+                "This action cannot be undone.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return SELECTING_UPLOAD_TO_DELETE
+        
+        elif choice == "confirm_delete_single":
+            entry_id = context.user_data.get("pending_delete_id")
+            if entry_id:
+                deleted = db.delete_entry_by_id(entry_id, user_id)
+                if deleted:
+                    await query.edit_message_text("✅ Upload deleted successfully.")
+                else:
+                    await query.edit_message_text("❌ Could not delete upload. It may have already been removed.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        elif choice == "cancel_delete_single":
+            await query.edit_message_text("👍 Deletion cancelled.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        return SELECTING_UPLOAD_TO_DELETE
 
     async def tag_selected(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle tag selection"""
+        text = update.message.text
+        
+        # Check if user wants to cancel
+        if text == "❌ Cancel":
+            await update.message.reply_text(
+                "👋 Upload cancelled.",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        
         try:
-            tag_number = int(update.message.text.split("️⃣")[0]) - 1
+            tag_number = int(text.split("️⃣")[0]) - 1
             if 0 <= tag_number < len(TAGS):
                 selected_tag = TAGS[tag_number]
                 context.user_data["selected_tag"] = selected_tag
@@ -268,7 +479,8 @@ If you can't read something clearly, note what you can see."""
                     f"Now send:\n"
                     f"• A photo/image\n"
                     f"• A PDF document\n"
-                    f"• Or type your message",
+                    f"• Or type your message\n\n"
+                    f"Or send /cancel to exit.",
                     parse_mode="Markdown",
                     reply_markup=ReplyKeyboardRemove(),
                 )
@@ -277,7 +489,7 @@ If you can't read something clearly, note what you can see."""
         except (ValueError, IndexError):
             pass
 
-        await update.message.reply_text("❌ Invalid selection. Please choose 1-6.")
+        await update.message.reply_text("❌ Invalid selection. Please choose 1-6 or Cancel.")
         return SELECTING_TAG
 
     async def content_received(
@@ -589,7 +801,7 @@ Provide a summary of the main points:"""
         )
 
     async def add_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Add a new viewer"""
+        """Add a new viewer - with confirmation"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -617,22 +829,33 @@ Provide a summary of the main points:"""
                 )
                 return
 
-            # Add as viewer
-            db.add_user(new_user_id, display_name, "viewer", user_id)
+            # Store pending action and ask for confirmation
+            buttons = [
+                [InlineKeyboardButton("✅ Confirm Add", callback_data=f"admin_add_confirm_{new_user_id}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin_add_cancel")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            # Store display name in context for later
+            context.user_data["pending_add_name"] = display_name
+            context.user_data["pending_add_id"] = new_user_id
 
             await update.message.reply_text(
-                f"✅ Added user:\n\n"
-                f"Name: {display_name}\n"
-                f"ID: {new_user_id}\n"
-                f"Role: VIEWER\n\n"
-                f"They can now use /start to access the bot."
+                f"⚠️ *CONFIRM ADD USER*\n\n"
+                f"You are about to add:\n\n"
+                f"*Name:* {display_name}\n"
+                f"*ID:* `{new_user_id}`\n"
+                f"*Role:* VIEWER\n\n"
+                f"Do you want to proceed?",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
             )
 
         except ValueError:
             await update.message.reply_text("❌ Invalid user ID. Must be a number.")
 
     async def remove_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Remove a user"""
+        """Remove a user - with confirmation"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -656,11 +879,132 @@ Provide a summary of the main points:"""
                 await update.message.reply_text("❌ Cannot remove super admins.")
                 return
 
-            db.remove_user(target_user_id)
-            await update.message.reply_text(f"✅ Removed user {target_user_id}.")
+            # Get target user info
+            target_user = db.get_user(target_user_id)
+            if not target_user:
+                await update.message.reply_text(f"❌ User {target_user_id} not found.")
+                return
+
+            # Store pending action and ask for confirmation
+            buttons = [
+                [InlineKeyboardButton("✅ Confirm Remove", callback_data=f"admin_remove_confirm_{target_user_id}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin_remove_cancel")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+
+            await update.message.reply_text(
+                f"⚠️ *CONFIRM REMOVE USER*\n\n"
+                f"You are about to remove:\n\n"
+                f"*Name:* {target_user['display_name']}\n"
+                f"*ID:* `{target_user_id}`\n"
+                f"*Role:* {target_user['role'].upper()}\n\n"
+                f"⚠️ This action cannot be undone.\n\n"
+                f"Do you want to proceed?",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
 
         except ValueError:
             await update.message.reply_text("❌ Invalid user ID.")
+
+    async def handle_admin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin confirmation callbacks for add/remove/promote"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = query.from_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+            await query.edit_message_text("❌ You don't have permission for this action.")
+            return
+        
+        callback_data = query.data
+        
+        # Handle ADD confirmations
+        if callback_data.startswith("admin_add_confirm_"):
+            new_user_id = int(callback_data.replace("admin_add_confirm_", ""))
+            display_name = context.user_data.get("pending_add_name", "Unknown")
+            
+            # Check if user still doesn't exist
+            existing = db.get_user(new_user_id)
+            if existing:
+                await query.edit_message_text(
+                    f"❌ User {new_user_id} is already registered as {existing['role']}."
+                )
+                context.user_data.clear()
+                return
+            
+            db.add_user(new_user_id, display_name, "viewer", user_id)
+            
+            await query.edit_message_text(
+                f"✅ *USER ADDED*\n\n"
+                f"*Name:* {display_name}\n"
+                f"*ID:* `{new_user_id}`\n"
+                f"*Role:* VIEWER\n\n"
+                f"They can now use /start to access the bot.",
+                parse_mode="Markdown",
+            )
+            context.user_data.clear()
+        
+        elif callback_data == "admin_add_cancel":
+            await query.edit_message_text("👍 Add user cancelled.")
+            context.user_data.clear()
+        
+        # Handle REMOVE confirmations
+        elif callback_data.startswith("admin_remove_confirm_"):
+            target_user_id = int(callback_data.replace("admin_remove_confirm_", ""))
+            
+            # Can't remove super admins
+            if target_user_id in SUPER_ADMIN_IDS:
+                await query.edit_message_text("❌ Cannot remove super admins.")
+                return
+            
+            target_user = db.get_user(target_user_id)
+            if target_user:
+                db.remove_user(target_user_id)
+                await query.edit_message_text(
+                    f"✅ *USER REMOVED*\n\n"
+                    f"*Name:* {target_user['display_name']}\n"
+                    f"*ID:* `{target_user_id}`",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(f"❌ User {target_user_id} not found.")
+        
+        elif callback_data == "admin_remove_cancel":
+            await query.edit_message_text("👍 Remove user cancelled.")
+        
+        # Handle PROMOTE confirmations
+        elif callback_data.startswith("admin_promote_confirm_"):
+            parts = callback_data.replace("admin_promote_confirm_", "").split("_")
+            target_user_id = int(parts[0])
+            new_role = parts[1]
+            
+            # Only superadmin can promote
+            if user["role"] != "superadmin":
+                await query.edit_message_text("❌ Only super admins can change user roles.")
+                return
+            
+            target_user = db.get_user(target_user_id)
+            if target_user:
+                old_role = target_user['role']
+                db.update_user_role(target_user_id, new_role)
+                await query.edit_message_text(
+                    f"✅ *ROLE CHANGED*\n\n"
+                    f"*Name:* {target_user['display_name']}\n"
+                    f"*ID:* `{target_user_id}`\n"
+                    f"*Previous Role:* {old_role.upper()}\n"
+                    f"*New Role:* {new_role.upper()}",
+                    parse_mode="Markdown",
+                )
+            else:
+                await query.edit_message_text(f"❌ User {target_user_id} not found.")
+            context.user_data.clear()
+        
+        elif callback_data == "admin_promote_cancel":
+            await query.edit_message_text("👍 Role change cancelled.")
+            context.user_data.clear()
 
     async def list_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all users"""
@@ -699,7 +1043,7 @@ Provide a summary of the main points:"""
         await update.message.reply_text(message, parse_mode="HTML")
 
     async def promote_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Promote user to uploader or uploadadmin (superadmin only)"""
+        """Promote user to uploader or uploadadmin (superadmin only) - with confirmation"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -710,7 +1054,7 @@ Provide a summary of the main points:"""
         if len(context.args) < 2:
             await update.message.reply_text(
                 "Usage: /promote [user_id] [role]\n\n"
-                "Roles: uploader, uploadadmin\n"
+                "Roles: viewer, uploader, uploadadmin\n"
                 "Example: /promote 123456789 uploader"
             )
             return
@@ -719,9 +1063,9 @@ Provide a summary of the main points:"""
             target_user_id = int(context.args[0])
             new_role = context.args[1].lower()
 
-            if new_role not in ["uploader", "uploadadmin"]:
+            if new_role not in ["viewer", "uploader", "uploadadmin"]:
                 await update.message.reply_text(
-                    "❌ Invalid role. Use: uploader or uploadadmin"
+                    "❌ Invalid role. Use: viewer, uploader, or uploadadmin"
                 )
                 return
 
@@ -732,10 +1076,26 @@ Provide a summary of the main points:"""
                 )
                 return
 
-            db.update_user_role(target_user_id, new_role)
+            # Store pending action and ask for confirmation
+            context.user_data["pending_promote_id"] = target_user_id
+            context.user_data["pending_promote_role"] = new_role
+
+            buttons = [
+                [InlineKeyboardButton("✅ Confirm Change", callback_data=f"admin_promote_confirm_{target_user_id}_{new_role}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="admin_promote_cancel")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
 
             await update.message.reply_text(
-                f"✅ Promoted user {target_user_id} to {new_role.upper()}."
+                f"⚠️ *CONFIRM ROLE CHANGE*\n\n"
+                f"You are about to change:\n\n"
+                f"*Name:* {target_user['display_name']}\n"
+                f"*ID:* `{target_user_id}`\n"
+                f"*Current Role:* {target_user['role'].upper()}\n"
+                f"*New Role:* {new_role.upper()}\n\n"
+                f"Do you want to proceed?",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
             )
 
         except ValueError:
@@ -1059,18 +1419,27 @@ Provide a summary of the main points:"""
     def setup_handlers(self):
         """Setup all command and message handlers"""
 
-        # Upload conversation handler
+        # Upload conversation handler with menu and privacy warning
         upload_conv = ConversationHandler(
             entry_points=[CommandHandler("upload", self.upload_start)],
             states={
+                UPLOAD_MENU: [
+                    CallbackQueryHandler(self.handle_upload_menu, pattern="^upload_|^confirm_|^cancel_"),
+                ],
+                PRIVACY_WARNING: [
+                    CallbackQueryHandler(self.handle_privacy_warning, pattern="^privacy_"),
+                ],
                 SELECTING_TAG: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.tag_selected)
                 ],
                 AWAITING_CONTENT: [
                     MessageHandler(
-                        filters.PHOTO | filters.Document.ALL | filters.TEXT,
+                        filters.PHOTO | filters.Document.ALL | (filters.TEXT & ~filters.COMMAND),
                         self.content_received,
                     )
+                ],
+                SELECTING_UPLOAD_TO_DELETE: [
+                    CallbackQueryHandler(self.handle_delete_entry, pattern="^delete_|^confirm_delete|^cancel_delete"),
                 ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel_upload)],
@@ -1109,6 +1478,9 @@ Provide a summary of the main points:"""
         
         # Callback query handler for summary buttons
         self.app.add_handler(CallbackQueryHandler(self.handle_summary_callback, pattern="^summary_"))
+        
+        # Callback query handler for admin confirmations (add/remove/promote)
+        self.app.add_handler(CallbackQueryHandler(self.handle_admin_callback, pattern="^admin_"))
 
     def run(self):
         """Start the bot"""

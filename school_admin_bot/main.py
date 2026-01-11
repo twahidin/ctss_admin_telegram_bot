@@ -513,6 +513,13 @@ class SchoolAdminBot:
         user_id = update.effective_user.id
         selected_tag = context.user_data.get("selected_tag")
 
+        # Check if tag was selected
+        if not selected_tag:
+            await update.message.reply_text(
+                "⚠️ No category selected. Please use /upload to start again."
+            )
+            return ConversationHandler.END
+
         content_data = {}
 
         if update.message.photo:
@@ -549,7 +556,7 @@ class SchoolAdminBot:
             
             # Check if it's a PDF and analyze it
             if file_name.lower().endswith('.pdf') or doc_bytes[:4] == b'%PDF':
-                await update.message.reply_text("🔍 Analyzing PDF content...")
+                await update.message.reply_text("🔍 Analyzing PDF content... This may take a few seconds.")
                 extracted_text = self.analyze_pdf(bytes(doc_bytes), selected_tag)
             # Check if it's an image document
             elif file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):

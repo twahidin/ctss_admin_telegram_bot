@@ -780,6 +780,14 @@ Text to parse:
             elif file_name.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
                 await update.message.reply_text("🔍 Analyzing image content...")
                 extracted_text = self.analyze_image(bytes(doc_bytes), selected_tag)
+            # Check if it's a text file
+            elif file_name.lower().endswith(('.txt', '.csv', '.text')):
+                try:
+                    extracted_text = doc_bytes.decode('utf-8')
+                    logger.info(f"Read text file: {len(extracted_text)} chars")
+                except UnicodeDecodeError:
+                    extracted_text = doc_bytes.decode('latin-1')
+                    logger.info(f"Read text file (latin-1): {len(extracted_text)} chars")
 
             content_data = {
                 "type": "document",

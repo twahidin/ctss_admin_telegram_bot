@@ -578,6 +578,14 @@ If you can't read something clearly, note what you can see."""
         context.user_data.clear()
         return ConversationHandler.END
 
+    async def cancel_upload_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel upload process from callback"""
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text("Upload cancelled.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
     async def ask_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle queries with Claude"""
         user_id = update.effective_user.id
@@ -1442,7 +1450,12 @@ Provide a summary of the main points:"""
                     CallbackQueryHandler(self.handle_delete_entry, pattern="^delete_|^confirm_delete|^cancel_delete"),
                 ],
             },
-            fallbacks=[CommandHandler("cancel", self.cancel_upload)],
+            fallbacks=[
+                CommandHandler("cancel", self.cancel_upload),
+                CallbackQueryHandler(self.cancel_upload_callback, pattern="^cancel$"),
+            ],
+            per_chat=True,
+            per_user=True,
         )
 
         # Mass upload conversation handler (super admin only)

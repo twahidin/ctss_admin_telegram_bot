@@ -803,64 +803,76 @@ Text to parse:
         if selected_tag == "RELIEF":
             user = db.get_user(user_id)
             if user and user["role"] in ["admin", "uploadadmin", "superadmin"]:
-                await update.message.reply_text("🔍 Parsing relief information for reminders...")
-                
-                # Parse relief data from extracted text
-                relief_data = self.parse_relief_data(extracted_text)
-                
-                if relief_data:
-                    # Process and create reminder entries
-                    created_reminders = await self.process_relief_reminders(relief_data, user_id)
+                try:
+                    await update.message.reply_text("🔍 Parsing relief information for reminders...")
                     
-                    if created_reminders:
-                        # Store reminders in context for activation flow
-                        context.user_data["pending_relief_reminders"] = created_reminders
+                    # Parse relief data from extracted text
+                    logger.info(f"Parsing relief data from text ({len(extracted_text)} chars)")
+                    relief_data = self.parse_relief_data(extracted_text)
+                    logger.info(f"Parsed relief data: {relief_data}")
+                    
+                    if relief_data:
+                        # Process and create reminder entries
+                        logger.info("Processing relief reminders...")
+                        created_reminders = await self.process_relief_reminders(relief_data, user_id)
+                        logger.info(f"Created {len(created_reminders) if created_reminders else 0} reminders")
                         
-                        # Build summary message
-                        matched_count = sum(1 for r in created_reminders if r["matched"])
-                        unmatched_count = len(created_reminders) - matched_count
-                        
-                        summary = f"📋 *Found {len(created_reminders)} relief assignments:*\n\n"
-                        
-                        for r in created_reminders[:10]:  # Show first 10
-                            status = "✅" if r["matched"] else "❓"
-                            summary += f"{status} {r['teacher_name']} - Period {r['period']} ({r['period_time']})\n"
-                            if r['class']:
-                                summary += f"   └ Class: {r['class']}\n"
-                        
-                        if len(created_reminders) > 10:
-                            summary += f"\n... and {len(created_reminders) - 10} more\n"
-                        
-                        summary += f"\n*Matched to users:* {matched_count}\n"
-                        summary += f"*Not matched:* {unmatched_count}\n\n"
-                        summary += "_Reminders will be sent 5 minutes before each period._"
-                        
-                        # Create activation buttons
-                        keyboard = [
-                            [InlineKeyboardButton("✅ Activate All Matched", callback_data="relief_activate_all")],
-                            [InlineKeyboardButton("🔧 Select Individual", callback_data="relief_select_individual")],
-                            [InlineKeyboardButton("❌ Skip Reminders", callback_data="relief_skip")],
-                        ]
-                        
-                        await update.message.reply_text(
-                            summary,
-                            parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup(keyboard)
-                        )
-                        
-                        # Don't clear user_data - we need it for the next state
-                        return RELIEF_ACTIVATION
+                        if created_reminders:
+                            # Store reminders in context for activation flow
+                            context.user_data["pending_relief_reminders"] = created_reminders
+                            
+                            # Build summary message
+                            matched_count = sum(1 for r in created_reminders if r["matched"])
+                            unmatched_count = len(created_reminders) - matched_count
+                            
+                            summary = f"📋 *Found {len(created_reminders)} relief assignments:*\n\n"
+                            
+                            for r in created_reminders[:10]:  # Show first 10
+                                status = "✅" if r["matched"] else "❓"
+                                summary += f"{status} {r['teacher_name']} - Period {r['period']} ({r['period_time']})\n"
+                                if r['class']:
+                                    summary += f"   └ Class: {r['class']}\n"
+                            
+                            if len(created_reminders) > 10:
+                                summary += f"\n... and {len(created_reminders) - 10} more\n"
+                            
+                            summary += f"\n*Matched to users:* {matched_count}\n"
+                            summary += f"*Not matched:* {unmatched_count}\n\n"
+                            summary += "_Reminders will be sent 5 minutes before each period._"
+                            
+                            # Create activation buttons
+                            keyboard = [
+                                [InlineKeyboardButton("✅ Activate All Matched", callback_data="relief_activate_all")],
+                                [InlineKeyboardButton("🔧 Select Individual", callback_data="relief_select_individual")],
+                                [InlineKeyboardButton("❌ Skip Reminders", callback_data="relief_skip")],
+                            ]
+                            
+                            await update.message.reply_text(
+                                summary,
+                                parse_mode="Markdown",
+                                reply_markup=InlineKeyboardMarkup(keyboard)
+                            )
+                            
+                            # Don't clear user_data - we need it for the next state
+                            return RELIEF_ACTIVATION
+                        else:
+                            await update.message.reply_text(
+                                "✅ Relief information saved.\n\n"
+                                "⚠️ Could not create reminders from the data.\n"
+                                "Use /upload to add more.",
+                            )
                     else:
                         await update.message.reply_text(
                             "✅ Relief information saved.\n\n"
-                            "⚠️ Could not create reminders from the data.\n"
+                            "ℹ️ No structured relief data could be extracted for reminders.\n"
                             "Use /upload to add more.",
                         )
-                else:
+                except Exception as e:
+                    logger.error(f"Error in relief processing: {e}", exc_info=True)
                     await update.message.reply_text(
-                        "✅ Relief information saved.\n\n"
-                        "ℹ️ No structured relief data could be extracted for reminders.\n"
-                        "Use /upload to add more.",
+                        f"✅ Relief information saved.\n\n"
+                        f"⚠️ Error setting up reminders: {str(e)}\n"
+                        f"Use /reliefstatus to check manually.",
                     )
             else:
                 # Non-admin uploaded RELIEF

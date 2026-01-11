@@ -508,6 +508,12 @@ class Database:
         cursor = conn.cursor()
 
         today = date.today()
+        
+        # Convert time object to string if needed
+        if hasattr(relief_time, 'strftime'):
+            relief_time_str = relief_time.strftime('%H:%M:%S')
+        else:
+            relief_time_str = str(relief_time)
 
         cursor.execute(
             """
@@ -516,7 +522,7 @@ class Database:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """,
-            (today, teacher_name, teacher_telegram_id, relief_time, period, class_info, room, original_teacher, created_by, activated),
+            (today, teacher_name, teacher_telegram_id, relief_time_str, period, class_info, room, original_teacher, created_by, activated),
         )
 
         reminder_id = cursor.fetchone()[0]

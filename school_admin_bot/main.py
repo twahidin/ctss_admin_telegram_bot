@@ -588,6 +588,30 @@ If you can't read something clearly, note what you can see."""
         context.user_data.clear()
         return ConversationHandler.END
 
+    async def handle_upload_menu_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle messages sent while in upload menu - remind user to use buttons"""
+        await update.message.reply_text(
+            "⚠️ Please use the buttons above to select an option.\n\n"
+            "Or send /cancel to exit."
+        )
+        return UPLOAD_MENU
+
+    async def handle_privacy_warning_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle messages sent while in privacy warning - remind user to use buttons"""
+        await update.message.reply_text(
+            "⚠️ Please click 'I Agree' or 'Cancel' above to continue.\n\n"
+            "Or send /cancel to exit."
+        )
+        return PRIVACY_WARNING
+
+    async def handle_delete_menu_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle messages sent while in delete menu - remind user to use buttons"""
+        await update.message.reply_text(
+            "⚠️ Please use the buttons above to select which upload to delete.\n\n"
+            "Or send /cancel to exit."
+        )
+        return SELECTING_UPLOAD_TO_DELETE
+
     async def ask_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle queries with Claude"""
         user_id = update.effective_user.id
@@ -1435,9 +1459,11 @@ Provide a summary of the main points:"""
             states={
                 UPLOAD_MENU: [
                     CallbackQueryHandler(self.handle_upload_menu, pattern="^upload_|^confirm_|^cancel_"),
+                    MessageHandler(filters.ALL, self.handle_upload_menu_message),
                 ],
                 PRIVACY_WARNING: [
                     CallbackQueryHandler(self.handle_privacy_warning, pattern="^privacy_"),
+                    MessageHandler(filters.ALL, self.handle_privacy_warning_message),
                 ],
                 SELECTING_TAG: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.tag_selected)
@@ -1450,6 +1476,7 @@ Provide a summary of the main points:"""
                 ],
                 SELECTING_UPLOAD_TO_DELETE: [
                     CallbackQueryHandler(self.handle_delete_entry, pattern="^delete_|^confirm_delete|^cancel_delete"),
+                    MessageHandler(filters.ALL, self.handle_delete_menu_message),
                 ],
             },
             fallbacks=[

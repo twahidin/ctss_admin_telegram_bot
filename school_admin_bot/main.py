@@ -1496,6 +1496,25 @@ Provide a summary of the main points:"""
         
         # Callback query handler for admin confirmations (add/remove/promote)
         self.app.add_handler(CallbackQueryHandler(self.handle_admin_callback, pattern="^admin_"))
+        
+        # Catch-all callback handler for debugging (should not normally be triggered)
+        self.app.add_handler(CallbackQueryHandler(self.handle_unknown_callback))
+
+    async def handle_unknown_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle callbacks that weren't caught by other handlers - for debugging"""
+        query = update.callback_query
+        await query.answer()
+        logger.warning(f"Unhandled callback: {query.data} from user {query.from_user.id}")
+        # Try to handle common upload callbacks that might have been missed
+        if query.data.startswith("upload_") or query.data.startswith("privacy_"):
+            await query.edit_message_text(
+                "⚠️ Session expired. Please use /upload to start again."
+            )
+
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Log errors"""
+        logger.error(f"Exception while handling an update: {context.error}")
+        logger.error(f"Update that caused error: {update}")
 
     def run(self):
         """Start the bot"""
@@ -1503,6 +1522,9 @@ Provide a summary of the main points:"""
 
         # Setup handlers
         self.setup_handlers()
+        
+        # Add error handler
+        self.app.add_error_handler(self.error_handler)
 
         # Schedule daily purge at 11 PM
         job_queue = self.app.job_queue

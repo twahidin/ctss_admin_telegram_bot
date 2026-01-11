@@ -85,6 +85,51 @@ class Database:
         """
         )
 
+        # Relief reminders table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS relief_reminders (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                teacher_name TEXT NOT NULL,
+                teacher_telegram_id BIGINT,
+                relief_time TIME NOT NULL,
+                period TEXT,
+                class_info TEXT,
+                room TEXT,
+                original_teacher TEXT,
+                reminder_sent BOOLEAN DEFAULT FALSE,
+                activated BOOLEAN DEFAULT FALSE,
+                created_by BIGINT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
+        # Create index on date for relief reminders
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_relief_reminders_date 
+            ON relief_reminders(date)
+        """
+        )
+
+        # No-show reports table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS noshow_reports (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                relief_reminder_id INTEGER REFERENCES relief_reminders(id),
+                teacher_name TEXT NOT NULL,
+                reported_by BIGINT NOT NULL,
+                reporter_name TEXT,
+                situation TEXT NOT NULL,
+                reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -341,6 +386,22 @@ class Database:
             (today,),
         )
 
+        # Delete old no-show reports first (due to foreign key)
+        cursor.execute(
+            """
+            DELETE FROM noshow_reports WHERE date < %s
+        """,
+            (today,),
+        )
+
+        # Delete old relief reminders
+        cursor.execute(
+            """
+            DELETE FROM relief_reminders WHERE date < %s
+        """,
+            (today,),
+        )
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -437,6 +498,278 @@ class Database:
         else:
             # Generate new code
             return self.generate_new_daily_code()
+
+    # ===== RELIEF REMINDERS =====
+
+    def add_relief_reminder(self, teacher_name, teacher_telegram_id, relief_time, period, 
+                           class_info, room, original_teacher, created_by, activated=False):
+        """Add a new relief reminder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            INSERT INTO relief_reminders 
+            (date, teacher_name, teacher_telegram_id, relief_time, period, class_info, room, original_teacher, created_by, activated)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """,
+            (today, teacher_name, teacher_telegram_id, relief_time, period, class_info, room, original_teacher, created_by, activated),
+        )
+
+        reminder_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return reminder_id
+
+    def get_today_relief_reminders(self):
+        """Get all relief reminders for today"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            SELECT id, teacher_name, teacher_telegram_id, 
+                   TO_CHAR(relief_time, 'HH24:MI') as relief_time,
+                   period, class_info, room, original_teacher, 
+                   reminder_sent, activated, created_by,
+                   TO_CHAR(created_at, 'HH24:MI') as created_at
+            FROM relief_reminders 
+            WHERE date = %s
+            ORDER BY relief_time ASC
+        """,
+            (today,),
+        )
+
+        reminders = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(r) for r in reminders]
+
+    def get_pending_relief_reminders(self, current_time):
+        """Get activated reminders that haven't been sent yet and are due"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            SELECT id, teacher_name, teacher_telegram_id, 
+                   TO_CHAR(relief_time, 'HH24:MI') as relief_time,
+                   period, class_info, room, original_teacher
+            FROM relief_reminders 
+            WHERE date = %s 
+              AND activated = TRUE 
+              AND reminder_sent = FALSE
+              AND relief_time <= %s
+            ORDER BY relief_time ASC
+        """,
+            (today, current_time),
+        )
+
+        reminders = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(r) for r in reminders]
+
+    def mark_reminder_sent(self, reminder_id):
+        """Mark a reminder as sent"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE relief_reminders SET reminder_sent = TRUE WHERE id = %s
+        """,
+            (reminder_id,),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def activate_reminder(self, reminder_id, activate=True):
+        """Activate or deactivate a reminder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE relief_reminders SET activated = %s WHERE id = %s
+        """,
+            (activate, reminder_id),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def activate_all_matched_reminders(self):
+        """Activate all reminders that have a matched telegram ID"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            UPDATE relief_reminders 
+            SET activated = TRUE 
+            WHERE date = %s AND teacher_telegram_id IS NOT NULL
+        """,
+            (today,),
+        )
+
+        updated = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return updated
+
+    def deactivate_all_reminders_today(self):
+        """Deactivate all reminders for today"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            UPDATE relief_reminders SET activated = FALSE WHERE date = %s
+        """,
+            (today,),
+        )
+
+        updated = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return updated
+
+    def get_relief_reminder_by_id(self, reminder_id):
+        """Get a specific relief reminder by ID"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, teacher_name, teacher_telegram_id, 
+                   TO_CHAR(relief_time, 'HH24:MI') as relief_time,
+                   period, class_info, room, original_teacher, 
+                   reminder_sent, activated
+            FROM relief_reminders 
+            WHERE id = %s
+        """,
+            (reminder_id,),
+        )
+
+        reminder = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(reminder) if reminder else None
+
+    def delete_relief_reminder(self, reminder_id):
+        """Delete a relief reminder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM relief_reminders WHERE id = %s
+        """,
+            (reminder_id,),
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return deleted
+
+    def find_user_by_name(self, name):
+        """Find a user by exact display name match"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT telegram_id, display_name, role FROM users 
+            WHERE LOWER(display_name) = LOWER(%s)
+        """,
+            (name,),
+        )
+
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(user) if user else None
+
+    # ===== NO-SHOW REPORTS =====
+
+    def add_noshow_report(self, relief_reminder_id, teacher_name, reported_by, reporter_name, situation):
+        """Add a no-show report"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            INSERT INTO noshow_reports 
+            (date, relief_reminder_id, teacher_name, reported_by, reporter_name, situation)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """,
+            (today, relief_reminder_id, teacher_name, reported_by, reporter_name, situation),
+        )
+
+        report_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return report_id
+
+    def get_today_noshow_reports(self):
+        """Get all no-show reports for today"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            SELECT nr.id, nr.teacher_name, nr.reported_by, nr.reporter_name, 
+                   nr.situation, TO_CHAR(nr.reported_at, 'HH24:MI') as reported_at,
+                   rr.period, rr.class_info, rr.room,
+                   TO_CHAR(rr.relief_time, 'HH24:MI') as relief_time
+            FROM noshow_reports nr
+            LEFT JOIN relief_reminders rr ON nr.relief_reminder_id = rr.id
+            WHERE nr.date = %s
+            ORDER BY nr.reported_at DESC
+        """,
+            (today,),
+        )
+
+        reports = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(r) for r in reports]
 
     # ===== STATISTICS =====
 

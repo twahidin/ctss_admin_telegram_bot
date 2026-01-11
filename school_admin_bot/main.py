@@ -1,8 +1,10 @@
 import os
 import io
+import re
+import json
 import base64
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import fitz  # PyMuPDF for PDF processing
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,6 +24,8 @@ from config import (
     TAGS,
     SUPER_ADMIN_IDS,
     DAILY_CODE_LENGTH,
+    PERIOD_TIMES,
+    REMINDER_MINUTES_BEFORE,
 )
 
 # Enable logging
@@ -34,6 +38,8 @@ logger = logging.getLogger(__name__)
 SELECTING_TAG, AWAITING_CONTENT, AWAITING_DETAILS, AWAITING_CODE = range(4)
 AWAITING_USER_ID, AWAITING_ROLE = range(4, 6)
 UPLOAD_MENU, PRIVACY_WARNING, SELECTING_UPLOAD_TO_DELETE = range(6, 9)
+RELIEF_ACTIVATION, SELECTING_RELIEF_REMINDERS = range(9, 11)
+NOSHOW_WARNING, NOSHOW_SITUATION = range(11, 13)
 
 # Initialize database
 db = Database()
@@ -145,6 +151,213 @@ class SchoolAdminBot:
             logger.error(f"PDF analysis error: {e}")
             return f"[PDF analysis failed: {str(e)}]"
 
+    def parse_relief_data(self, extracted_text: str) -> list:
+        """
+        Parse relief information from extracted text using Claude.
+        Returns a list of relief entries with teacher names and periods.
+        """
+        try:
+            response = claude_client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2000,
+                timeout=30.0,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"""Extract ALL relief teacher assignments from this text. 
+For each relief assignment, extract:
+- relief_teacher: Name of the teacher doing the relief
+- original_teacher: Name of the absent teacher (if mentioned)
+- period: The period number (0-25)
+- class: The class name (e.g., "3A", "4E1")
+- room: The classroom/venue (if mentioned)
+
+Return ONLY valid JSON array. No explanation.
+Format: [{{"relief_teacher": "Name", "original_teacher": "Name or null", "period": "5", "class": "3A", "room": "Room"}}]
+
+If no relief data found, return empty array: []
+
+Text to parse:
+{extracted_text}"""
+                    }
+                ],
+            )
+            
+            result_text = response.content[0].text.strip()
+            
+            # Try to extract JSON array from the response
+            # Handle cases where Claude might wrap it in markdown
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+            
+            relief_data = json.loads(result_text)
+            logger.info(f"Parsed relief data: {relief_data}")
+            return relief_data
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse relief JSON: {e}, response: {result_text[:500]}")
+            return []
+        except Exception as e:
+            logger.error(f"Relief parsing error: {e}")
+            return []
+
+    def match_teacher_to_user(self, teacher_name: str) -> int | None:
+        """
+        Try to match a teacher name to a registered user.
+        Returns telegram_id if found, None otherwise.
+        """
+        if not teacher_name:
+            return None
+            
+        # Clean the name
+        clean_name = teacher_name.strip()
+        
+        # Try exact match first
+        user = db.find_user_by_name(clean_name)
+        if user:
+            return user["telegram_id"]
+        
+        # Try matching partial names (last name or first name)
+        all_users = db.get_all_users()
+        name_lower = clean_name.lower()
+        
+        for user in all_users:
+            display_name = user["display_name"].lower()
+            # Check if the teacher name contains the user's display name or vice versa
+            if name_lower in display_name or display_name in name_lower:
+                return user["telegram_id"]
+            # Check individual parts of the name
+            name_parts = name_lower.split()
+            display_parts = display_name.split()
+            for part in name_parts:
+                if len(part) > 2 and part in display_parts:
+                    return user["telegram_id"]
+        
+        return None
+
+    def get_period_start_time(self, period: str) -> time | None:
+        """Get the start time for a given period number."""
+        time_str = PERIOD_TIMES.get(str(period))
+        if time_str:
+            hour, minute = map(int, time_str.split(":"))
+            return time(hour=hour, minute=minute)
+        return None
+
+    def calculate_reminder_time(self, period_time: time) -> time:
+        """Calculate when to send the reminder (X minutes before period)."""
+        today = datetime.today()
+        period_dt = datetime.combine(today, period_time)
+        reminder_dt = period_dt - timedelta(minutes=REMINDER_MINUTES_BEFORE)
+        return reminder_dt.time()
+
+    async def process_relief_reminders(self, relief_data: list, created_by: int) -> list:
+        """
+        Process parsed relief data and create reminder entries.
+        Returns list of created reminders with match status.
+        """
+        created_reminders = []
+        
+        for entry in relief_data:
+            teacher_name = entry.get("relief_teacher", "").strip()
+            if not teacher_name:
+                continue
+                
+            # Match teacher to user
+            telegram_id = self.match_teacher_to_user(teacher_name)
+            
+            # Get period time
+            period = entry.get("period", "")
+            period_time = self.get_period_start_time(period)
+            
+            if not period_time:
+                logger.warning(f"Could not find time for period {period}")
+                continue
+            
+            # Calculate reminder time
+            reminder_time = self.calculate_reminder_time(period_time)
+            
+            # Create reminder entry
+            reminder_id = db.add_relief_reminder(
+                teacher_name=teacher_name,
+                teacher_telegram_id=telegram_id,
+                relief_time=reminder_time,
+                period=str(period),
+                class_info=entry.get("class", ""),
+                room=entry.get("room", ""),
+                original_teacher=entry.get("original_teacher", ""),
+                created_by=created_by,
+                activated=False
+            )
+            
+            created_reminders.append({
+                "id": reminder_id,
+                "teacher_name": teacher_name,
+                "telegram_id": telegram_id,
+                "matched": telegram_id is not None,
+                "period": period,
+                "period_time": PERIOD_TIMES.get(str(period), ""),
+                "reminder_time": reminder_time.strftime("%H:%M"),
+                "class": entry.get("class", ""),
+                "room": entry.get("room", ""),
+            })
+        
+        return created_reminders
+
+    async def send_relief_reminder(self, context: ContextTypes.DEFAULT_TYPE, reminder: dict):
+        """Send a relief reminder notification to a teacher."""
+        telegram_id = reminder.get("teacher_telegram_id")
+        if not telegram_id:
+            return False
+            
+        try:
+            period = reminder.get("period", "?")
+            class_info = reminder.get("class_info", "")
+            room = reminder.get("room", "")
+            original = reminder.get("original_teacher", "")
+            relief_time = reminder.get("relief_time", "")
+            
+            message = (
+                f"⏰ *Relief Reminder!*\n\n"
+                f"📚 Period {period} ({relief_time})\n"
+            )
+            
+            if class_info:
+                message += f"🎓 Class: {class_info}\n"
+            if room:
+                message += f"🚪 Room: {room}\n"
+            if original:
+                message += f"👤 Covering for: {original}\n"
+            
+            message += f"\n_Starting in {REMINDER_MINUTES_BEFORE} minutes_"
+            
+            await context.bot.send_message(
+                chat_id=telegram_id,
+                text=message,
+                parse_mode="Markdown"
+            )
+            
+            # Mark as sent
+            db.mark_reminder_sent(reminder["id"])
+            logger.info(f"Sent relief reminder to {telegram_id} for period {period}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send relief reminder: {e}")
+            return False
+
+    async def relief_reminder_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job that runs every minute to check and send due relief reminders."""
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        
+        # Get pending reminders that are due
+        pending = db.get_pending_relief_reminders(current_time)
+        
+        for reminder in pending:
+            await self.send_relief_reminder(context, reminder)
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command - register user"""
         user_id = update.effective_user.id
@@ -195,6 +408,7 @@ class SchoolAdminBot:
         # Basic commands for everyone
         help_text += "/ask [question] - Query today's information\n"
         help_text += "/today - See all categories and entry counts\n"
+        help_text += "/noshow - Report a no-show relief teacher\n"
         help_text += "/help - Show this help message\n"
 
         # Uploader commands
@@ -215,12 +429,16 @@ class SchoolAdminBot:
             return
 
         help_text = "🔧 *ADMIN COMMANDS*\n\n"
+        help_text += "*User Management:*\n"
         help_text += "/add [user_id] [name] - Add a new viewer\n"
         help_text += "  └ Example: /add 123456789 John Teacher\n"
         help_text += "/remove [user_id] - Remove a user\n"
         help_text += "/promote [user_id] [role] - Change user role\n"
         help_text += "  └ Roles: viewer, uploader, uploadadmin\n"
         help_text += "/list - Show all registered users\n"
+        help_text += "\n*Relief Management:*\n"
+        help_text += "/reliefstatus - View today's relief reminders\n"
+        help_text += "/cancelrelief - Cancel all relief reminders\n"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -576,6 +794,7 @@ class SchoolAdminBot:
             text_content = update.message.text
             content_data = {"type": "text", "content": text_content}
             content_type = "text"
+            extracted_text = text_content
 
         # Save to database
         db.add_entry(user_id, selected_tag, content_data)
@@ -583,10 +802,71 @@ class SchoolAdminBot:
         await update.message.reply_text(
             f"✅ *Information saved!*\n\n"
             f"Category: {selected_tag}\n"
-            f"Type: {content_type}\n\n"
-            f"Use /upload to add more.",
+            f"Type: {content_type}",
             parse_mode="Markdown",
         )
+
+        # If this is a RELIEF upload and user is admin/superadmin, offer to set up reminders
+        if selected_tag == "RELIEF":
+            user = db.get_user(user_id)
+            if user and user["role"] in ["admin", "uploadadmin", "superadmin"]:
+                await update.message.reply_text("🔍 Parsing relief information...")
+                
+                # Parse relief data from extracted text
+                relief_data = self.parse_relief_data(extracted_text)
+                
+                if relief_data:
+                    # Process and create reminder entries
+                    created_reminders = await self.process_relief_reminders(relief_data, user_id)
+                    
+                    if created_reminders:
+                        # Store reminders in context for activation flow
+                        context.user_data["pending_relief_reminders"] = created_reminders
+                        
+                        # Build summary message
+                        matched_count = sum(1 for r in created_reminders if r["matched"])
+                        unmatched_count = len(created_reminders) - matched_count
+                        
+                        summary = f"📋 *Found {len(created_reminders)} relief assignments:*\n\n"
+                        
+                        for r in created_reminders[:10]:  # Show first 10
+                            status = "✅" if r["matched"] else "❓"
+                            summary += f"{status} {r['teacher_name']} - Period {r['period']} ({r['period_time']})\n"
+                            if r['class']:
+                                summary += f"   └ Class: {r['class']}\n"
+                        
+                        if len(created_reminders) > 10:
+                            summary += f"\n... and {len(created_reminders) - 10} more\n"
+                        
+                        summary += f"\n*Matched to users:* {matched_count}\n"
+                        summary += f"*Not matched:* {unmatched_count}\n\n"
+                        summary += "_Reminders will be sent 5 minutes before each period._"
+                        
+                        # Create activation buttons
+                        keyboard = [
+                            [InlineKeyboardButton("✅ Activate All Matched", callback_data="relief_activate_all")],
+                            [InlineKeyboardButton("🔧 Select Individual", callback_data="relief_select_individual")],
+                            [InlineKeyboardButton("❌ Skip Reminders", callback_data="relief_skip")],
+                        ]
+                        
+                        await update.message.reply_text(
+                            summary,
+                            parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup(keyboard)
+                        )
+                        
+                        return RELIEF_ACTIVATION
+                    else:
+                        await update.message.reply_text(
+                            "⚠️ Could not create reminders from the relief data.\n"
+                            "Use /upload to add more.",
+                        )
+                else:
+                    await update.message.reply_text(
+                        "ℹ️ No structured relief data could be extracted.\n"
+                        "The information has been saved but no reminders were created.\n"
+                        "Use /upload to add more.",
+                    )
 
         context.user_data.clear()
         return ConversationHandler.END
@@ -630,6 +910,404 @@ class SchoolAdminBot:
             "Or send /cancel to exit."
         )
         return SELECTING_UPLOAD_TO_DELETE
+
+    async def handle_relief_activation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle relief reminder activation choices"""
+        query = update.callback_query
+        await query.answer()
+        
+        action = query.data
+        
+        if action == "relief_activate_all":
+            # Activate all matched reminders
+            activated = db.activate_all_matched_reminders()
+            await query.edit_message_text(
+                f"✅ *Activated {activated} relief reminders!*\n\n"
+                f"Teachers will receive notifications {REMINDER_MINUTES_BEFORE} minutes before their relief period.\n\n"
+                f"Use /reliefstatus to view active reminders.\n"
+                f"Use /cancelrelief to cancel reminders.",
+                parse_mode="Markdown"
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        elif action == "relief_select_individual":
+            # Show individual selection
+            reminders = context.user_data.get("pending_relief_reminders", [])
+            
+            if not reminders:
+                await query.edit_message_text("No reminders available to select.")
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            # Create buttons for each reminder
+            keyboard = []
+            for r in reminders:
+                if r["matched"]:
+                    status = "🔔" if r.get("activated") else "🔕"
+                    text = f"{status} {r['teacher_name']} - P{r['period']}"
+                    keyboard.append([InlineKeyboardButton(text, callback_data=f"relief_toggle_{r['id']}")])
+            
+            keyboard.append([InlineKeyboardButton("✅ Save & Activate", callback_data="relief_save_selection")])
+            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="relief_skip")])
+            
+            await query.edit_message_text(
+                "🔧 *Select reminders to activate:*\n\n"
+                "Tap to toggle on/off. Only matched users shown.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return SELECTING_RELIEF_REMINDERS
+            
+        elif action == "relief_skip":
+            await query.edit_message_text(
+                "ℹ️ Relief reminders skipped.\n"
+                "Use /reliefstatus to view or activate reminders later.",
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        return RELIEF_ACTIVATION
+
+    async def handle_relief_individual_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle individual relief reminder selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        action = query.data
+        
+        if action == "relief_save_selection":
+            # Count activated reminders
+            reminders = db.get_today_relief_reminders()
+            activated = sum(1 for r in reminders if r["activated"])
+            
+            await query.edit_message_text(
+                f"✅ *Saved! {activated} reminders activated.*\n\n"
+                f"Use /reliefstatus to view active reminders.\n"
+                f"Use /cancelrelief to cancel reminders.",
+                parse_mode="Markdown"
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        elif action == "relief_skip":
+            await query.edit_message_text(
+                "ℹ️ Relief reminders cancelled.",
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        elif action.startswith("relief_toggle_"):
+            reminder_id = int(action.replace("relief_toggle_", ""))
+            
+            # Toggle the reminder activation
+            reminder = db.get_relief_reminder_by_id(reminder_id)
+            if reminder:
+                new_state = not reminder["activated"]
+                db.activate_reminder(reminder_id, new_state)
+            
+            # Refresh the button list
+            reminders = db.get_today_relief_reminders()
+            keyboard = []
+            
+            for r in reminders:
+                if r["teacher_telegram_id"]:
+                    status = "🔔" if r["activated"] else "🔕"
+                    text = f"{status} {r['teacher_name']} - P{r['period']}"
+                    keyboard.append([InlineKeyboardButton(text, callback_data=f"relief_toggle_{r['id']}")])
+            
+            keyboard.append([InlineKeyboardButton("✅ Save & Activate", callback_data="relief_save_selection")])
+            keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="relief_skip")])
+            
+            await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+            return SELECTING_RELIEF_REMINDERS
+        
+        return SELECTING_RELIEF_REMINDERS
+
+    async def relief_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show current relief reminder status"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] not in ["admin", "uploadadmin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        reminders = db.get_today_relief_reminders()
+        
+        if not reminders:
+            await update.message.reply_text(
+                "📋 *No relief reminders for today.*\n\n"
+                "Upload RELIEF information to create reminders.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        message = "📋 *Today's Relief Reminders:*\n\n"
+        
+        active_count = 0
+        for r in reminders:
+            status = "🔔" if r["activated"] else "🔕"
+            sent = " (sent)" if r["reminder_sent"] else ""
+            matched = "✓" if r["teacher_telegram_id"] else "?"
+            
+            if r["activated"]:
+                active_count += 1
+            
+            message += f"{status} [{matched}] {r['teacher_name']} - P{r['period']} ({r['relief_time']}){sent}\n"
+            if r['class_info']:
+                message += f"   └ {r['class_info']}"
+                if r['room']:
+                    message += f" @ {r['room']}"
+                message += "\n"
+        
+        message += f"\n*Active:* {active_count}/{len(reminders)}\n"
+        message += f"_✓ = matched to user, ? = not matched_"
+        
+        # Add action buttons
+        keyboard = [
+            [InlineKeyboardButton("✅ Activate All Matched", callback_data="relief_cmd_activate_all")],
+            [InlineKeyboardButton("❌ Deactivate All", callback_data="relief_cmd_deactivate_all")],
+        ]
+        
+        await update.message.reply_text(
+            message,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    async def handle_relief_command_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle relief status command callbacks"""
+        query = update.callback_query
+        await query.answer()
+        
+        action = query.data
+        
+        if action == "relief_cmd_activate_all":
+            activated = db.activate_all_matched_reminders()
+            await query.edit_message_text(
+                f"✅ Activated {activated} relief reminders.",
+            )
+        elif action == "relief_cmd_deactivate_all":
+            deactivated = db.deactivate_all_reminders_today()
+            await query.edit_message_text(
+                f"❌ Deactivated {deactivated} relief reminders.",
+            )
+
+    async def cancel_relief(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Cancel all relief reminders for today"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] not in ["admin", "uploadadmin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        deactivated = db.deactivate_all_reminders_today()
+        
+        await update.message.reply_text(
+            f"❌ *Cancelled {deactivated} relief reminders.*\n\n"
+            f"Use /reliefstatus to reactivate if needed.",
+            parse_mode="Markdown"
+        )
+
+    # ===== NO-SHOW REPORTING =====
+
+    async def noshow_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start no-show reporting flow"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text(
+                "❌ You need to be registered. Use /start first."
+            )
+            return ConversationHandler.END
+        
+        # Show warning message
+        warning_message = (
+            "⚠️ *Before Reporting a No-Show*\n\n"
+            "Please ensure you have:\n"
+            "1️⃣ Tried to contact the relief teacher directly\n"
+            "2️⃣ Called the General Office if unable to reach them\n"
+            "3️⃣ Waited at least 5 minutes past the period start time\n\n"
+            "_This report will be sent to school administrators for records._"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ I've Done This, Continue", callback_data="noshow_continue")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="noshow_cancel")],
+        ]
+        
+        await update.message.reply_text(
+            warning_message,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        return NOSHOW_WARNING
+
+    async def handle_noshow_warning(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle no-show warning acknowledgment"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "noshow_cancel":
+            await query.edit_message_text("No-show report cancelled.")
+            context.user_data.clear()
+            return ConversationHandler.END
+        
+        if query.data == "noshow_continue":
+            # Get today's relief reminders for selection
+            reminders = db.get_today_relief_reminders()
+            
+            if reminders:
+                # Show list of relief assignments to select from
+                keyboard = []
+                for r in reminders:
+                    text = f"{r['teacher_name']} - P{r['period']}"
+                    if r['class_info']:
+                        text += f" ({r['class_info']})"
+                    keyboard.append([InlineKeyboardButton(text, callback_data=f"noshow_select_{r['id']}")])
+                
+                keyboard.append([InlineKeyboardButton("📝 Other (Not Listed)", callback_data="noshow_other")])
+                keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="noshow_cancel")])
+                
+                await query.edit_message_text(
+                    "📋 *Select the relief assignment:*\n\n"
+                    "Choose from today's relief list or select 'Other' to enter manually.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            else:
+                # No relief data, ask for manual entry
+                await query.edit_message_text(
+                    "📝 *No relief data for today.*\n\n"
+                    "Please type the relief teacher's name:",
+                    parse_mode="Markdown"
+                )
+                context.user_data["noshow_manual_entry"] = True
+            
+            return NOSHOW_SITUATION
+        
+        return NOSHOW_WARNING
+
+    async def handle_noshow_situation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle no-show situation input"""
+        # Check if this is a callback or text message
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            
+            if query.data == "noshow_cancel":
+                await query.edit_message_text("No-show report cancelled.")
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            if query.data.startswith("noshow_select_"):
+                reminder_id = int(query.data.replace("noshow_select_", ""))
+                reminder = db.get_relief_reminder_by_id(reminder_id)
+                
+                if reminder:
+                    context.user_data["noshow_reminder_id"] = reminder_id
+                    context.user_data["noshow_teacher_name"] = reminder["teacher_name"]
+                    
+                    await query.edit_message_text(
+                        f"📝 *Relief Teacher:* {reminder['teacher_name']}\n"
+                        f"*Period:* {reminder['period']}\n\n"
+                        f"Please describe the situation briefly:\n"
+                        f"_Example: \"Teacher has not arrived. Class 3A unattended.\"_",
+                        parse_mode="Markdown"
+                    )
+                    return NOSHOW_SITUATION
+                
+            elif query.data == "noshow_other":
+                await query.edit_message_text(
+                    "📝 Please type the relief teacher's name:",
+                    parse_mode="Markdown"
+                )
+                context.user_data["noshow_manual_entry"] = True
+                return NOSHOW_SITUATION
+            
+            return NOSHOW_SITUATION
+        
+        # Handle text input
+        text = update.message.text.strip()
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        reporter_name = user["display_name"] if user else "Unknown"
+        
+        if context.user_data.get("noshow_manual_entry") and not context.user_data.get("noshow_teacher_name"):
+            # This is the teacher name entry
+            context.user_data["noshow_teacher_name"] = text
+            context.user_data["noshow_manual_entry"] = False
+            
+            await update.message.reply_text(
+                f"📝 *Relief Teacher:* {text}\n\n"
+                f"Please describe the situation briefly:",
+                parse_mode="Markdown"
+            )
+            return NOSHOW_SITUATION
+        
+        # This is the situation description
+        teacher_name = context.user_data.get("noshow_teacher_name", "Unknown")
+        reminder_id = context.user_data.get("noshow_reminder_id")
+        
+        # Save the no-show report
+        report_id = db.add_noshow_report(
+            relief_reminder_id=reminder_id,
+            teacher_name=teacher_name,
+            reported_by=user_id,
+            reporter_name=reporter_name,
+            situation=text
+        )
+        
+        await update.message.reply_text(
+            f"✅ *No-Show Report Submitted*\n\n"
+            f"Teacher: {teacher_name}\n"
+            f"Report ID: #{report_id}\n\n"
+            f"Administrators have been notified.",
+            parse_mode="Markdown"
+        )
+        
+        # Notify admins and superadmins
+        await self.notify_admins_noshow(update, context, teacher_name, reporter_name, text, report_id)
+        
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    async def notify_admins_noshow(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                   teacher_name: str, reporter_name: str, situation: str, report_id: int):
+        """Notify all admins and superadmins about a no-show report"""
+        notification = (
+            f"🚨 *NO-SHOW REPORT #{report_id}*\n\n"
+            f"👤 Relief Teacher: {teacher_name}\n"
+            f"📋 Reported by: {reporter_name}\n"
+            f"⏰ Time: {datetime.now().strftime('%H:%M')}\n\n"
+            f"📝 *Situation:*\n{situation}"
+        )
+        
+        # Get all admins and superadmins
+        all_users = db.get_all_users()
+        admin_ids = [u["telegram_id"] for u in all_users if u["role"] in ["admin", "uploadadmin", "superadmin"]]
+        
+        # Also include super admin IDs from config
+        admin_ids.extend(SUPER_ADMIN_IDS)
+        admin_ids = list(set(admin_ids))  # Remove duplicates
+        
+        for admin_id in admin_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=notification,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id} about no-show: {e}")
+
+    async def handle_noshow_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle messages during no-show flow - redirect to situation handler"""
+        return await self.handle_noshow_situation(update, context)
 
     async def ask_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle queries with Claude"""
@@ -1472,7 +2150,7 @@ Provide a summary of the main points:"""
     def setup_handlers(self):
         """Setup all command and message handlers"""
 
-        # Upload conversation handler with menu and privacy warning
+        # Upload conversation handler with menu, privacy warning, and relief activation
         upload_conv = ConversationHandler(
             entry_points=[CommandHandler("upload", self.upload_start)],
             states={
@@ -1497,6 +2175,12 @@ Provide a summary of the main points:"""
                     CallbackQueryHandler(self.handle_delete_entry, pattern="^delete_|^confirm_delete|^cancel_delete"),
                     MessageHandler(filters.ALL, self.handle_delete_menu_message),
                 ],
+                RELIEF_ACTIVATION: [
+                    CallbackQueryHandler(self.handle_relief_activation, pattern="^relief_"),
+                ],
+                SELECTING_RELIEF_REMINDERS: [
+                    CallbackQueryHandler(self.handle_relief_individual_selection, pattern="^relief_"),
+                ],
             },
             fallbacks=[
                 CommandHandler("cancel", self.cancel_upload),
@@ -1517,12 +2201,30 @@ Provide a summary of the main points:"""
             fallbacks=[CommandHandler("cancel", self.cancel_upload)],
         )
 
+        # No-show reporting conversation handler
+        noshow_conv = ConversationHandler(
+            entry_points=[CommandHandler("noshow", self.noshow_start)],
+            states={
+                NOSHOW_WARNING: [
+                    CallbackQueryHandler(self.handle_noshow_warning, pattern="^noshow_"),
+                ],
+                NOSHOW_SITUATION: [
+                    CallbackQueryHandler(self.handle_noshow_situation, pattern="^noshow_"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_noshow_message),
+                ],
+            },
+            fallbacks=[CommandHandler("cancel", self.cancel_upload)],
+            allow_reentry=True,
+            name="noshow_conversation",
+        )
+
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help_command))
         self.app.add_handler(CommandHandler("adminhelp", self.admin_help))
         self.app.add_handler(CommandHandler("superhelp", self.super_help))
         self.app.add_handler(upload_conv)
         self.app.add_handler(mass_upload_conv)
+        self.app.add_handler(noshow_conv)
         self.app.add_handler(CommandHandler("ask", self.ask_query))
         self.app.add_handler(CommandHandler("today", self.today_summary))
         self.app.add_handler(CommandHandler("myuploads", self.my_uploads))
@@ -1532,6 +2234,9 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("promote", self.promote_user))
         self.app.add_handler(CommandHandler("stats", self.show_stats))
         self.app.add_handler(CommandHandler("purge", self.manual_purge))
+        # Relief management commands
+        self.app.add_handler(CommandHandler("reliefstatus", self.relief_status))
+        self.app.add_handler(CommandHandler("cancelrelief", self.cancel_relief))
         # Hidden super admin commands
         self.app.add_handler(CommandHandler("addsuperadmin", self.add_superadmin))
         self.app.add_handler(CommandHandler("removesuperadmin", self.remove_superadmin))
@@ -1542,6 +2247,9 @@ Provide a summary of the main points:"""
         
         # Callback query handler for admin confirmations (add/remove/promote)
         self.app.add_handler(CallbackQueryHandler(self.handle_admin_callback, pattern="^admin_"))
+        
+        # Callback query handler for relief command buttons
+        self.app.add_handler(CallbackQueryHandler(self.handle_relief_command_callback, pattern="^relief_cmd_"))
         
         # Catch-all callback handler for debugging (should not normally be triggered)
         self.app.add_handler(CallbackQueryHandler(self.handle_unknown_callback))
@@ -1578,6 +2286,14 @@ Provide a summary of the main points:"""
             self.daily_purge_job,
             time=time(hour=23, minute=0),  # 11 PM
             name="daily_purge",
+        )
+
+        # Schedule relief reminder check every minute (during school hours: 7am-5pm)
+        job_queue.run_repeating(
+            self.relief_reminder_job,
+            interval=60,  # Every 60 seconds
+            first=10,  # Start after 10 seconds
+            name="relief_reminders",
         )
 
         logger.info("Bot started successfully!")

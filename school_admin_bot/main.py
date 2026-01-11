@@ -799,18 +799,11 @@ Text to parse:
         # Save to database
         db.add_entry(user_id, selected_tag, content_data)
 
-        await update.message.reply_text(
-            f"✅ *Information saved!*\n\n"
-            f"Category: {selected_tag}\n"
-            f"Type: {content_type}",
-            parse_mode="Markdown",
-        )
-
         # If this is a RELIEF upload and user is admin/superadmin, offer to set up reminders
         if selected_tag == "RELIEF":
             user = db.get_user(user_id)
             if user and user["role"] in ["admin", "uploadadmin", "superadmin"]:
-                await update.message.reply_text("🔍 Parsing relief information...")
+                await update.message.reply_text("🔍 Parsing relief information for reminders...")
                 
                 # Parse relief data from extracted text
                 relief_data = self.parse_relief_data(extracted_text)
@@ -855,18 +848,38 @@ Text to parse:
                             reply_markup=InlineKeyboardMarkup(keyboard)
                         )
                         
+                        # Don't clear user_data - we need it for the next state
                         return RELIEF_ACTIVATION
                     else:
                         await update.message.reply_text(
-                            "⚠️ Could not create reminders from the relief data.\n"
+                            "✅ Relief information saved.\n\n"
+                            "⚠️ Could not create reminders from the data.\n"
                             "Use /upload to add more.",
                         )
                 else:
                     await update.message.reply_text(
-                        "ℹ️ No structured relief data could be extracted.\n"
-                        "The information has been saved but no reminders were created.\n"
+                        "✅ Relief information saved.\n\n"
+                        "ℹ️ No structured relief data could be extracted for reminders.\n"
                         "Use /upload to add more.",
                     )
+            else:
+                # Non-admin uploaded RELIEF
+                await update.message.reply_text(
+                    f"✅ *Information saved!*\n\n"
+                    f"Category: {selected_tag}\n"
+                    f"Type: {content_type}\n\n"
+                    f"Use /upload to add more.",
+                    parse_mode="Markdown",
+                )
+        else:
+            # Non-RELIEF upload - show normal confirmation
+            await update.message.reply_text(
+                f"✅ *Information saved!*\n\n"
+                f"Category: {selected_tag}\n"
+                f"Type: {content_type}\n\n"
+                f"Use /upload to add more.",
+                parse_mode="Markdown",
+            )
 
         context.user_data.clear()
         return ConversationHandler.END

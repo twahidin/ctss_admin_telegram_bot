@@ -279,6 +279,8 @@ If you can't read something clearly, note what you can see."""
         user_id = query.from_user.id
         choice = query.data
         
+        logger.info(f"Upload menu callback received: {choice} from user {user_id}")
+        
         if choice == "upload_exit":
             await query.edit_message_text("👋 Upload cancelled. Come back anytime!")
             context.user_data.clear()
@@ -1454,8 +1456,8 @@ Provide a summary of the main points:"""
                 CommandHandler("cancel", self.cancel_upload),
                 CallbackQueryHandler(self.cancel_upload_callback, pattern="^cancel$"),
             ],
-            per_chat=True,
-            per_user=True,
+            allow_reentry=True,
+            name="upload_conversation",
         )
 
         # Mass upload conversation handler (super admin only)

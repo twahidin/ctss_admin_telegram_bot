@@ -414,7 +414,7 @@ Text to parse:
         # Uploader commands
         if role in ["uploader", "uploadadmin", "superadmin"]:
             help_text += "\n*Uploader Commands:*\n"
-            help_text += "/upload - Upload new information\n"
+            help_text += "/upload - Upload new or remove information\n"
             help_text += "/myuploads - See your uploads today\n"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")

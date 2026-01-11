@@ -59,7 +59,8 @@ class SchoolAdminBot:
             
             response = claude_client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=2000,
+                max_tokens=1500,
+                timeout=30.0,  # 30 second timeout
                 messages=[
                     {
                         "role": "user",
@@ -74,17 +75,7 @@ class SchoolAdminBot:
                             },
                             {
                                 "type": "text",
-                                "text": f"""This is an image uploaded to the "{category}" category in a school admin system.
-                                
-Please extract ALL text and information from this image. Include:
-- Names of teachers, staff, or students
-- Class names (like 3A, 4B, etc.)
-- Times and schedules
-- Room numbers
-- Any other relevant details
-
-Format the extracted information clearly. If it's a schedule or table, preserve the structure.
-If you can't read something clearly, note what you can see."""
+                                "text": f"""Extract ALL text from this "{category}" image. Include names, classes, times, rooms. Be concise."""
                             }
                         ],
                     }
@@ -100,20 +91,41 @@ If you can't read something clearly, note what you can see."""
             return f"[Image analysis failed: {str(e)}]"
 
     def analyze_pdf(self, pdf_data: bytes, category: str) -> str:
-        """Analyze PDF by converting pages to images and extracting text"""
+        """Analyze PDF - first try direct text extraction, fall back to image analysis"""
         try:
             # Open PDF from bytes
             pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
             all_extracted_text = []
             
-            # Process each page (limit to first 10 pages to avoid too much processing)
-            max_pages = min(len(pdf_document), 10)
+            # Limit to first 5 pages to avoid timeout
+            max_pages = min(len(pdf_document), 5)
             
+            # First, try to extract text directly (much faster)
+            has_text = False
             for page_num in range(max_pages):
                 page = pdf_document[page_num]
+                text = page.get_text().strip()
+                if text:
+                    has_text = True
+                    all_extracted_text.append(f"--- Page {page_num + 1} ---\n{text}")
+            
+            # If we got text directly, use it
+            if has_text and len("\n".join(all_extracted_text)) > 100:
+                pdf_document.close()
+                combined_text = "\n\n".join(all_extracted_text)
+                logger.info(f"Extracted text directly from PDF ({max_pages} pages): {combined_text[:200]}...")
+                return combined_text
+            
+            # Otherwise, fall back to image analysis (for scanned PDFs)
+            # Only analyze first 2 pages to avoid timeout
+            all_extracted_text = []
+            max_pages_for_ocr = min(len(pdf_document), 2)
+            
+            for page_num in range(max_pages_for_ocr):
+                page = pdf_document[page_num]
                 
-                # Convert page to image (higher resolution for better OCR)
-                mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
+                # Convert page to image (lower resolution to speed up)
+                mat = fitz.Matrix(1.5, 1.5)  # 1.5x zoom (reduced from 2x)
                 pix = page.get_pixmap(matrix=mat)
                 
                 # Convert to PNG bytes
@@ -126,7 +138,7 @@ If you can't read something clearly, note what you can see."""
             pdf_document.close()
             
             combined_text = "\n\n".join(all_extracted_text)
-            logger.info(f"Extracted text from PDF ({max_pages} pages): {combined_text[:200]}...")
+            logger.info(f"Extracted text from PDF via OCR ({max_pages_for_ocr} pages): {combined_text[:200]}...")
             return combined_text
             
         except Exception as e:

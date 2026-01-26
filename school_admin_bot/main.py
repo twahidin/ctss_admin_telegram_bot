@@ -1080,7 +1080,7 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["admin", "uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ This command is for admins only.")
             return
         
@@ -1150,7 +1150,7 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["admin", "uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ This command is for admins only.")
             return
         

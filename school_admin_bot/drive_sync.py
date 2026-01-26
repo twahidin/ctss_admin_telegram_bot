@@ -112,6 +112,7 @@ class DriveSync:
         export_format options:
         - 'application/pdf' for PDF
         - 'text/plain' for plain text
+        - 'text/csv' for CSV (Google Sheets only)
         - 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' for Excel
         """
         try:
@@ -123,6 +124,7 @@ class DriveSync:
                 },
                 'application/vnd.google-apps.spreadsheet': {
                     'pdf': 'application/pdf',
+                    'csv': 'text/csv',
                     'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 },
                 'application/vnd.google-apps.presentation': {
@@ -139,6 +141,8 @@ class DriveSync:
                 export_mime = export_mime_map[mime_type].get('pdf', 'application/pdf')
             elif export_format == 'text/plain':
                 export_mime = export_mime_map[mime_type].get('txt', 'text/plain')
+            elif export_format == 'text/csv':
+                export_mime = export_mime_map[mime_type].get('csv', 'text/csv')
             else:
                 export_mime = export_format
 
@@ -165,12 +169,15 @@ class DriveSync:
         mime_type = file.get('mimeType', '')
 
         # Check if it's a Google Workspace file
-        if mime_type in [
+        if mime_type == 'application/vnd.google-apps.spreadsheet':
+            # Export Google Sheets as CSV for better structured data extraction
+            logger.info(f"Exporting Google Sheets {file['name']} as CSV")
+            return self.export_google_file(file_id, mime_type, 'text/csv')
+        elif mime_type in [
             'application/vnd.google-apps.document',
-            'application/vnd.google-apps.spreadsheet',
             'application/vnd.google-apps.presentation'
         ]:
-            # Export as PDF for processing
+            # Export Docs/Presentations as PDF for processing
             logger.info(f"Exporting Google file {file['name']} as PDF")
             return self.export_google_file(file_id, mime_type, 'application/pdf')
         else:

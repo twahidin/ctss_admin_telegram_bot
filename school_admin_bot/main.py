@@ -1436,8 +1436,16 @@ Text to parse:
                             # PDF file
                             extracted_text = self.analyze_pdf(file_content, category)
                             file_type = "document"
+                        elif file.get('mimeType', '') == 'application/vnd.google-apps.spreadsheet':
+                            # Google Sheets exported as CSV - read directly
+                            try:
+                                extracted_text = file_content.decode('utf-8')
+                                logger.info(f"Read Google Sheets as CSV: {len(extracted_text)} chars")
+                            except:
+                                extracted_text = file_content.decode('latin-1')
+                            file_type = "document"
                         elif file.get('mimeType', '').startswith('text/'):
-                            # Text file
+                            # Text file (including CSV)
                             try:
                                 extracted_text = file_content.decode('utf-8')
                             except:

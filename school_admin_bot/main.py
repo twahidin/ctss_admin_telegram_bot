@@ -1182,9 +1182,8 @@ Text to parse:
                 "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
                 "Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
                 "Available roles: viewer, relief_member, admin, superadmin\n\n"
-                "Note: Relief Committee folder access is automatically managed:\n"
-                "- Relief Committee: relief_member, admin, superadmin only\n"
-                "- Other folders: viewer, relief_member, admin, superadmin"
+                "Note: All folders are accessible to relief_member, admin, and superadmin only.\n"
+                "Viewers can only query data that has been synced."
             )
             return
         
@@ -1288,30 +1287,21 @@ Text to parse:
         
         await update.message.reply_text("🔄 Syncing files from Google Drive...")
         
-        # Get folders accessible to user's role based on new rules:
-        # - Relief Committee: Only relief_member, admin, superadmin
-        # - All other folders: viewer, relief_member, admin, superadmin
+        # Get folders accessible to user's role:
+        # All folders: relief_member, admin, superadmin only
         all_folders = db.get_all_folders()
         accessible_folders = []
         
         for folder in all_folders:
-            folder_name = folder['folder_name'].lower()
-            is_relief_committee = 'relief committee' in folder_name
-            
-            if is_relief_committee:
-                # Relief Committee: only relief_member, admin, superadmin
-                if user["role"] in ["relief_member", "admin", "superadmin"]:
-                    accessible_folders.append(folder)
-            else:
-                # Other folders: viewer, relief_member, admin, superadmin
-                if user["role"] in ["viewer", "relief_member", "admin", "superadmin"]:
-                    accessible_folders.append(folder)
+            # All folders accessible to relief_member, admin, superadmin
+            if user["role"] in ["relief_member", "admin", "superadmin"]:
+                accessible_folders.append(folder)
         
         if not accessible_folders:
             await update.message.reply_text(
                 f"ℹ️ No folders accessible for your role ({user['role']}).\n\n"
-                f"Viewers and relief_members can access all folders except Relief Committee.\n"
-                f"Relief Committee is only accessible to relief_member, admin, and superadmin."
+                f"Only relief_member, admin, and superadmin can access Google Drive folders.\n"
+                f"Viewers can only query data that has been synced."
             )
             return
         
@@ -1757,29 +1747,23 @@ Provide a direct, concise answer. If the information isn't available, say so cle
     def _filter_entries_by_folder_access(self, entries, user_role):
         """
         Filter entries based on folder access rules:
-        - Relief Committee: Only relief_member, admin, superadmin
-        - All other folders: viewer, relief_member, admin, superadmin
+        - All folders: relief_member, admin, superadmin only
+        - Entries without folder (uploaded via Telegram): accessible to all
         """
         filtered = []
         
         for entry in entries:
             content_data = entry.get("content", {})
-            folder = content_data.get("folder", "").lower()
+            folder = content_data.get("folder", "")
             
-            # Check if entry is from Relief Committee folder
-            is_relief_committee = "relief committee" in folder
-            
-            if is_relief_committee:
-                # Relief Committee: only relief_member, admin, superadmin
+            # If entry has a folder (from Google Drive), check access
+            if folder:
+                # All folders: relief_member, admin, superadmin only
                 if user_role in ["relief_member", "admin", "superadmin"]:
                     filtered.append(entry)
             else:
-                # Other folders: viewer, relief_member, admin, superadmin
-                if user_role in ["viewer", "relief_member", "admin", "superadmin"]:
-                    filtered.append(entry)
-                # Also include entries uploaded via Telegram (no folder field)
-                elif "folder" not in content_data:
-                    filtered.append(entry)
+                # Entries uploaded via Telegram (no folder field): accessible to all
+                filtered.append(entry)
         
         return filtered
 

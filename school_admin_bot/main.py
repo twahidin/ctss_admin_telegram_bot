@@ -1355,23 +1355,42 @@ Text to parse:
         
         await update.message.reply_text("🔄 Syncing files from Google Drive...")
         
-        # Get folders accessible to user's role:
-        # All folders: relief_member, admin, superadmin only
-        all_folders = db.get_all_folders()
-        accessible_folders = []
-        
-        for folder in all_folders:
-            # All folders accessible to relief_member, admin, superadmin
-            if user["role"] in ["relief_member", "admin", "superadmin"]:
-                accessible_folders.append(folder)
-        
-        if not accessible_folders:
+        # Check role access
+        if user["role"] not in ["relief_member", "admin", "superadmin"]:
             await update.message.reply_text(
-                f"ℹ️ No folders accessible for your role ({user['role']}).\n\n"
-                f"Only relief_member, admin, and superadmin can access Google Drive folders.\n"
+                f"❌ Only relief_member, admin, and superadmin can sync Google Drive folders.\n"
                 f"Viewers can only query data that has been synced."
             )
             return
+        
+        # Get folders from database
+        all_folders = db.get_all_folders()
+        
+        # If no folders in database, auto-discover from Google Drive
+        if not all_folders:
+            await update.message.reply_text("📁 Discovering folders from Google Drive...")
+            drive_folders = self.drive_sync.list_folders()
+            
+            if not drive_folders:
+                await update.message.reply_text("❌ No folders found in Google Drive.")
+                return
+            
+            # Auto-add all discovered folders to database
+            for drive_folder in drive_folders:
+                db.add_or_update_drive_folder(
+                    folder_name=drive_folder['name'],
+                    drive_folder_id=drive_folder['id'],
+                    parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
+                )
+            
+            all_folders = db.get_all_folders()
+            await update.message.reply_text(
+                f"✅ Discovered {len(all_folders)} folders. Starting sync...\n"
+                f"💡 Use /setfolder to configure role access if needed."
+            )
+        
+        # All folders are accessible to relief_member, admin, superadmin
+        accessible_folders = all_folders
         
         total_files = 0
         total_processed = 0

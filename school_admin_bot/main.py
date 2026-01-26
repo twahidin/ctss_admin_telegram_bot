@@ -414,24 +414,65 @@ Text to parse:
 
         role = user["role"]
 
-        help_text = "📚 *AVAILABLE COMMANDS*\n\n"
+        help_text = "📚 *HELP - GENERAL COMMANDS*\n\n"
+        help_text += "*Information & Queries:*\n"
+        help_text += "/ask [question] - Ask questions about today's information\n"
+        help_text += "  └ Example: /ask Who's teaching 3A at 10am?\n"
+        help_text += "/today - View all categories and entry counts for today\n"
+        help_text += "/noshow - Report a no-show relief teacher\n\n"
 
-        # Basic commands for everyone
-        help_text += "/ask [question] - Query today's information\n"
-        help_text += "/today - See all categories and entry counts\n"
-        help_text += "/noshow - Report a no-show relief teacher\n"
-        help_text += "/help - Show this help message\n"
+        # Show role-specific help links
+        if role == "relief_member":
+            help_text += "*Additional Help:*\n"
+            help_text += "/relief_help - Relief member specific commands\n"
+        elif role in ["admin", "superadmin"]:
+            help_text += "*Additional Help:*\n"
+            help_text += "/relief_help - Relief management commands\n"
+            help_text += "/helpadmin - Admin and management commands\n"
 
-        # Admin upload commands (only admin and superadmin can upload)
-        if role in ["admin", "superadmin"]:
-            help_text += "\n*Admin Commands:*\n"
-            help_text += "/upload - Upload new or remove information\n"
-            help_text += "/myuploads - See your uploads today\n"
+        help_text += "\n/help - Show this help message"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
-    async def admin_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show admin help - for admins"""
+    async def relief_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show relief member help"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+
+        if not user:
+            await update.message.reply_text(
+                "You're not registered. Use /start to begin."
+            )
+            return
+
+        if user["role"] not in ["relief_member", "admin", "superadmin"]:
+            await update.message.reply_text(
+                "❌ This command is for relief members and admins only."
+            )
+            return
+
+        help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
+        help_text += "*Relief Reminders:*\n"
+        help_text += "/reliefstatus - View all relief reminders for today\n"
+        help_text += "  └ Shows active reminders and their status\n"
+        help_text += "/cancelrelief - Cancel all relief reminders for today\n"
+        help_text += "  └ Use this if relief assignments are cancelled\n\n"
+        
+        help_text += "*Google Drive Access:*\n"
+        help_text += "/sync - Sync files from Google Drive folders\n"
+        help_text += "  └ Downloads and processes files from accessible folders\n"
+        help_text += "/syncstatus - View sync history for today\n\n"
+        
+        help_text += "*General Commands:*\n"
+        help_text += "/help - View general help commands\n"
+        
+        if user["role"] in ["admin", "superadmin"]:
+            help_text += "/helpadmin - View admin management commands\n"
+
+        await update.message.reply_text(help_text, parse_mode="Markdown")
+
+    async def helpadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show admin help - for admins and superadmins"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -439,21 +480,42 @@ Text to parse:
             await update.message.reply_text("❌ This command is for admins only.")
             return
 
-        help_text = "🔧 *ADMIN COMMANDS*\n\n"
+        help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
+        
+        help_text += "*File Upload:*\n"
+        help_text += "/upload - Upload new information or remove existing uploads\n"
+        help_text += "  └ Supports photos, PDFs, and text\n"
+        help_text += "/myuploads - View your uploads for today\n\n"
+        
         help_text += "*User Management:*\n"
-        help_text += "/add [user_id] [name] - Add a new user\n"
+        help_text += "/add [user_id] [name] - Add a new user to the system\n"
         help_text += "  └ Example: /add 123456789 John Teacher\n"
-        help_text += "/remove [user_id] - Remove a user\n"
-        help_text += "/promote [user_id] [role] - Change user role\n"
+        help_text += "/remove [user_id] - Remove a user from the system\n"
+        help_text += "/promote [user_id] [role] - Change a user's role\n"
         help_text += "  └ Roles: viewer, relief_member, admin\n"
-        help_text += "/list - Show all registered users\n"
-        help_text += "\n*Google Drive:*\n"
-        help_text += "/sync - Sync files from accessible folders\n"
-        help_text += "/listfolders - View folder access configuration\n"
-        help_text += "\n*Relief Management:*\n"
+        help_text += "  └ Example: /promote 123456789 relief_member\n"
+        help_text += "/list - Show all registered users and their roles\n\n"
+        
+        help_text += "*Google Drive Management:*\n"
+        help_text += "/sync - Sync files from accessible Google Drive folders\n"
+        help_text += "/listfolders - View all folders and their access configuration\n"
+        help_text += "/drivefolder - View connected Google Drive folder information\n"
+        help_text += "/syncstatus - View sync history and status\n"
+        
+        if user["role"] == "superadmin":
+            help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
+            help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
+        
+        help_text += "*Relief Management:*\n"
         help_text += "/reliefstatus - View today's relief reminders\n"
         help_text += "/cancelrelief - Cancel all relief reminders\n\n"
-        help_text += "*Note:* Relief members can also use relief management commands."
+        
+        help_text += "*Other Commands:*\n"
+        help_text += "/help - View general help commands\n"
+        help_text += "/relief_help - View relief management commands\n"
+        
+        if user["role"] == "superadmin":
+            help_text += "/superhelp - View super admin commands\n"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -465,20 +527,27 @@ Text to parse:
         if user_id not in SUPER_ADMIN_IDS:
             return  # Silently ignore
 
-        help_text = "👑 *SUPER ADMIN COMMANDS*\n\n"
+        help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
         help_text += "*User Management:*\n"
-        help_text += "/massupload - Upload CSV to replace all users\n"
+        help_text += "/massupload - Upload CSV file to replace all users\n"
         help_text += "  └ CSV format: telegram\\_id,name,role\n"
         help_text += "  └ Roles: viewer, relief\\_member, admin\n"
-        help_text += "/addsuperadmin [user_id] - Add a super admin\n"
+        help_text += "  └ ⚠️ This replaces all users except protected super admins\n"
+        help_text += "/addsuperadmin [user_id] - Add a new super admin\n"
         help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
         help_text += "/listsuperadmins - List all super admins\n\n"
-        help_text += "*Google Drive:*\n"
+        help_text += "*Google Drive Configuration:*\n"
         help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
-        help_text += "/listfolders - View all folders and access\n\n"
-        help_text += "*System:*\n"
-        help_text += "/stats - Show usage statistics\n"
-        help_text += "/purge - Manually purge old data\n\n"
+        help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n"
+        help_text += "  └ Available roles: viewer, relief\\_member, admin, superadmin\n"
+        help_text += "/listfolders - View all folders and their access configuration\n\n"
+        help_text += "*System Management:*\n"
+        help_text += "/stats - Show bot usage statistics\n"
+        help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
+        help_text += "*Other Commands:*\n"
+        help_text += "/help - View general help commands\n"
+        help_text += "/relief_help - View relief management commands\n"
+        help_text += "/helpadmin - View admin management commands\n\n"
         help_text += "⚠️ Your account (ID: {}) is protected and cannot be removed.".format(user_id)
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -2733,7 +2802,8 @@ Provide a summary of the main points:"""
 
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help_command))
-        self.app.add_handler(CommandHandler("adminhelp", self.admin_help))
+        self.app.add_handler(CommandHandler("relief_help", self.relief_help))
+        self.app.add_handler(CommandHandler("helpadmin", self.helpadmin))
         self.app.add_handler(CommandHandler("superhelp", self.super_help))
         self.app.add_handler(upload_conv)
         self.app.add_handler(mass_upload_conv)

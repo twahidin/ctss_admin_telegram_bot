@@ -42,7 +42,6 @@ SELECTING_TAG, AWAITING_CONTENT, AWAITING_DETAILS, AWAITING_CODE = range(4)
 AWAITING_USER_ID, AWAITING_ROLE = range(4, 6)
 UPLOAD_MENU, PRIVACY_WARNING, SELECTING_UPLOAD_TO_DELETE = range(6, 9)
 RELIEF_ACTIVATION, SELECTING_RELIEF_REMINDERS = range(9, 11)
-NOSHOW_WARNING, NOSHOW_SITUATION = range(11, 13)
 
 # Initialize database
 db = Database()
@@ -418,23 +417,22 @@ Text to parse:
         help_text += "*Information & Queries:*\n"
         help_text += "/ask [question] - Ask questions about today's information\n"
         help_text += "  └ Example: /ask Who's teaching 3A at 10am?\n"
-        help_text += "/today - View all categories and entry counts for today\n"
-        help_text += "/noshow - Report a no-show relief teacher\n\n"
+        help_text += "/today - View all categories and entry counts for today\n\n"
 
         # Show role-specific help links
         if role == "relief_member":
             help_text += "*Additional Help:*\n"
-            help_text += "/relief_help - Relief member specific commands\n"
+            help_text += "/helprelief - Relief member specific commands\n"
         elif role in ["admin", "superadmin"]:
             help_text += "*Additional Help:*\n"
-            help_text += "/relief_help - Relief management commands\n"
+            help_text += "/helprelief - Relief management commands\n"
             help_text += "/helpadmin - Admin and management commands\n"
 
         help_text += "\n/help - Show this help message"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
-    async def relief_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def helprelief(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show relief member help"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
@@ -512,14 +510,14 @@ Text to parse:
         
         help_text += "*Other Commands:*\n"
         help_text += "/help - View general help commands\n"
-        help_text += "/relief_help - View relief management commands\n"
+        help_text += "/helprelief - View relief management commands\n"
         
         if user["role"] == "superadmin":
-            help_text += "/superhelp - View super admin commands\n"
+            help_text += "/helpsuper - View super admin commands\n"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
-    async def super_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def helpsuper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show super admin help - hidden command"""
         user_id = update.effective_user.id
         
@@ -1547,204 +1545,6 @@ Text to parse:
             message += f"... and {len(logs) - 10} more syncs"
         
         await update.message.reply_text(message, parse_mode="Markdown")
-
-    # ===== NO-SHOW REPORTING =====
-
-    async def noshow_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start no-show reporting flow"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        
-        if not user:
-            await update.message.reply_text(
-                "❌ You need to be registered. Use /start first."
-            )
-            return ConversationHandler.END
-        
-        # Show warning message
-        warning_message = (
-            "⚠️ *Before Reporting a No-Show*\n\n"
-            "Please ensure you have:\n"
-            "1️⃣ Tried to contact the relief teacher directly\n"
-            "2️⃣ Called the General Office if unable to reach them\n"
-            "3️⃣ Waited at least 5 minutes past the period start time\n\n"
-            "_This report will be sent to school administrators for records._"
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("✅ I've Done This, Continue", callback_data="noshow_continue")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="noshow_cancel")],
-        ]
-        
-        await update.message.reply_text(
-            warning_message,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        
-        return NOSHOW_WARNING
-
-    async def handle_noshow_warning(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle no-show warning acknowledgment"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "noshow_cancel":
-            await query.edit_message_text("No-show report cancelled.")
-            context.user_data.clear()
-            return ConversationHandler.END
-        
-        if query.data == "noshow_continue":
-            # Get today's relief reminders for selection
-            reminders = db.get_today_relief_reminders()
-            
-            if reminders:
-                # Show list of relief assignments to select from
-                keyboard = []
-                for r in reminders:
-                    text = f"{r['teacher_name']} - P{r['period']}"
-                    if r['class_info']:
-                        text += f" ({r['class_info']})"
-                    keyboard.append([InlineKeyboardButton(text, callback_data=f"noshow_select_{r['id']}")])
-                
-                keyboard.append([InlineKeyboardButton("📝 Other (Not Listed)", callback_data="noshow_other")])
-                keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="noshow_cancel")])
-                
-                await query.edit_message_text(
-                    "📋 *Select the relief assignment:*\n\n"
-                    "Choose from today's relief list or select 'Other' to enter manually.",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            else:
-                # No relief data, ask for manual entry
-                await query.edit_message_text(
-                    "📝 *No relief data for today.*\n\n"
-                    "Please type the relief teacher's name:",
-                    parse_mode="Markdown"
-                )
-                context.user_data["noshow_manual_entry"] = True
-            
-            return NOSHOW_SITUATION
-        
-        return NOSHOW_WARNING
-
-    async def handle_noshow_situation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle no-show situation input"""
-        # Check if this is a callback or text message
-        if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            
-            if query.data == "noshow_cancel":
-                await query.edit_message_text("No-show report cancelled.")
-                context.user_data.clear()
-                return ConversationHandler.END
-            
-            if query.data.startswith("noshow_select_"):
-                reminder_id = int(query.data.replace("noshow_select_", ""))
-                reminder = db.get_relief_reminder_by_id(reminder_id)
-                
-                if reminder:
-                    context.user_data["noshow_reminder_id"] = reminder_id
-                    context.user_data["noshow_teacher_name"] = reminder["teacher_name"]
-                    
-                    await query.edit_message_text(
-                        f"📝 *Relief Teacher:* {reminder['teacher_name']}\n"
-                        f"*Period:* {reminder['period']}\n\n"
-                        f"Please describe the situation briefly:\n"
-                        f"_Example: \"Teacher has not arrived. Class 3A unattended.\"_",
-                        parse_mode="Markdown"
-                    )
-                    return NOSHOW_SITUATION
-                
-            elif query.data == "noshow_other":
-                await query.edit_message_text(
-                    "📝 Please type the relief teacher's name:",
-                    parse_mode="Markdown"
-                )
-                context.user_data["noshow_manual_entry"] = True
-                return NOSHOW_SITUATION
-            
-            return NOSHOW_SITUATION
-        
-        # Handle text input
-        text = update.message.text.strip()
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        reporter_name = user["display_name"] if user else "Unknown"
-        
-        if context.user_data.get("noshow_manual_entry") and not context.user_data.get("noshow_teacher_name"):
-            # This is the teacher name entry
-            context.user_data["noshow_teacher_name"] = text
-            context.user_data["noshow_manual_entry"] = False
-            
-            await update.message.reply_text(
-                f"📝 *Relief Teacher:* {text}\n\n"
-                f"Please describe the situation briefly:",
-                parse_mode="Markdown"
-            )
-            return NOSHOW_SITUATION
-        
-        # This is the situation description
-        teacher_name = context.user_data.get("noshow_teacher_name", "Unknown")
-        reminder_id = context.user_data.get("noshow_reminder_id")
-        
-        # Save the no-show report
-        report_id = db.add_noshow_report(
-            relief_reminder_id=reminder_id,
-            teacher_name=teacher_name,
-            reported_by=user_id,
-            reporter_name=reporter_name,
-            situation=text
-        )
-        
-        await update.message.reply_text(
-            f"✅ *No-Show Report Submitted*\n\n"
-            f"Teacher: {teacher_name}\n"
-            f"Report ID: #{report_id}\n\n"
-            f"Administrators have been notified.",
-            parse_mode="Markdown"
-        )
-        
-        # Notify admins and superadmins
-        await self.notify_admins_noshow(update, context, teacher_name, reporter_name, text, report_id)
-        
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    async def notify_admins_noshow(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                   teacher_name: str, reporter_name: str, situation: str, report_id: int):
-        """Notify all admins and superadmins about a no-show report"""
-        notification = (
-            f"🚨 *NO-SHOW REPORT #{report_id}*\n\n"
-            f"👤 Relief Teacher: {teacher_name}\n"
-            f"📋 Reported by: {reporter_name}\n"
-            f"⏰ Time: {datetime.now().strftime('%H:%M')}\n\n"
-            f"📝 *Situation:*\n{situation}"
-        )
-        
-        # Get all admins and superadmins
-        all_users = db.get_all_users()
-        admin_ids = [u["telegram_id"] for u in all_users if u["role"] in ["admin", "superadmin"]]
-        
-        # Also include super admin IDs from config
-        admin_ids.extend(SUPER_ADMIN_IDS)
-        admin_ids = list(set(admin_ids))  # Remove duplicates
-        
-        for admin_id in admin_ids:
-            try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=notification,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Failed to notify admin {admin_id} about no-show: {e}")
-
-    async def handle_noshow_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle messages during no-show flow - redirect to situation handler"""
-        return await self.handle_noshow_situation(update, context)
 
     async def ask_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle queries with Claude"""
@@ -2783,31 +2583,13 @@ Provide a summary of the main points:"""
             fallbacks=[CommandHandler("cancel", self.cancel_upload)],
         )
 
-        # No-show reporting conversation handler
-        noshow_conv = ConversationHandler(
-            entry_points=[CommandHandler("noshow", self.noshow_start)],
-            states={
-                NOSHOW_WARNING: [
-                    CallbackQueryHandler(self.handle_noshow_warning, pattern="^noshow_"),
-                ],
-                NOSHOW_SITUATION: [
-                    CallbackQueryHandler(self.handle_noshow_situation, pattern="^noshow_"),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_noshow_message),
-                ],
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel_upload)],
-            allow_reentry=True,
-            name="noshow_conversation",
-        )
-
         self.app.add_handler(CommandHandler("start", self.start))
         self.app.add_handler(CommandHandler("help", self.help_command))
-        self.app.add_handler(CommandHandler("relief_help", self.relief_help))
+        self.app.add_handler(CommandHandler("helprelief", self.helprelief))
         self.app.add_handler(CommandHandler("helpadmin", self.helpadmin))
-        self.app.add_handler(CommandHandler("superhelp", self.super_help))
+        self.app.add_handler(CommandHandler("helpsuper", self.helpsuper))
         self.app.add_handler(upload_conv)
         self.app.add_handler(mass_upload_conv)
-        self.app.add_handler(noshow_conv)
         self.app.add_handler(CommandHandler("ask", self.ask_query))
         self.app.add_handler(CommandHandler("today", self.today_summary))
         self.app.add_handler(CommandHandler("myuploads", self.my_uploads))

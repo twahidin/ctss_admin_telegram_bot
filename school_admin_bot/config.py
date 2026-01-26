@@ -67,6 +67,11 @@ PERIOD_TIMES = {
 # Minutes before lesson to send reminder
 REMINDER_MINUTES_BEFORE = 5
 
+# Google Drive Integration
+GOOGLE_DRIVE_ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+DRIVE_SYNC_HOUR = int(os.getenv("DRIVE_SYNC_HOUR", "6"))  # Default 6 AM
+
 # Validate required environment variables
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN environment variable is required")

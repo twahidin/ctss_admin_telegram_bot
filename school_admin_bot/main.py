@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 import anthropic
 from database import Database
+from drive_sync import DriveSync
 from config import (
     TELEGRAM_TOKEN,
     CLAUDE_API_KEY,
@@ -26,6 +27,8 @@ from config import (
     DAILY_CODE_LENGTH,
     PERIOD_TIMES,
     REMINDER_MINUTES_BEFORE,
+    GOOGLE_DRIVE_ROOT_FOLDER_ID,
+    DRIVE_SYNC_HOUR,
 )
 
 # Enable logging
@@ -51,6 +54,14 @@ claude_client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 class SchoolAdminBot:
     def __init__(self):
         self.app = None
+        # Initialize Drive sync (optional, only if configured)
+        self.drive_sync = None
+        try:
+            if GOOGLE_DRIVE_ROOT_FOLDER_ID:
+                self.drive_sync = DriveSync()
+                logger.info("Google Drive sync initialized")
+        except Exception as e:
+            logger.warning(f"Google Drive sync not available: {e}")
 
     def analyze_image(self, image_data: bytes, category: str) -> str:
         """Analyze image using Claude's vision API and extract text/information"""
@@ -1144,6 +1155,312 @@ Text to parse:
             parse_mode="Markdown"
         )
 
+    # ===== GOOGLE DRIVE SYNC =====
+
+    async def set_folder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Set folder-role access mapping (superadmin only)"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] != "superadmin":
+            await update.message.reply_text("❌ Only super admins can configure folders.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
+                "Example: /setfolder \"Relief Timetable\" admin,uploadadmin\n\n"
+                "Available roles: viewer, uploader, uploadadmin, admin, superadmin"
+            )
+            return
+        
+        # Parse folder name (may be quoted)
+        folder_name = context.args[0].strip('"\'')
+        roles_str = " ".join(context.args[1:])
+        roles = [r.strip() for r in roles_str.split(",")]
+        
+        # Validate roles
+        valid_roles = ["viewer", "uploader", "uploadadmin", "admin", "superadmin"]
+        invalid_roles = [r for r in roles if r not in valid_roles]
+        if invalid_roles:
+            await update.message.reply_text(
+                f"❌ Invalid roles: {', '.join(invalid_roles)}\n\n"
+                f"Valid roles: {', '.join(valid_roles)}"
+            )
+            return
+        
+        # Find folder in Drive
+        folder = self.drive_sync.get_folder_by_name(folder_name)
+        if not folder:
+            await update.message.reply_text(
+                f"❌ Folder '{folder_name}' not found in Google Drive.\n\n"
+                f"Use /listfolders to see available folders."
+            )
+            return
+        
+        # Add/update folder in database
+        folder_id = db.add_or_update_drive_folder(
+            folder_name=folder['name'],
+            drive_folder_id=folder['id'],
+            parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
+        )
+        
+        # Set role access
+        db.set_folder_role_access(folder_id, roles)
+        
+        await update.message.reply_text(
+            f"✅ *Folder configured!*\n\n"
+            f"*Folder:* {folder['name']}\n"
+            f"*Accessible to:* {', '.join(roles)}\n\n"
+            f"Use /sync to sync files from this folder.",
+            parse_mode="Markdown"
+        )
+
+    async def list_folders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List all folders and their role access"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        # Get folders from Drive
+        drive_folders = self.drive_sync.list_folders()
+        db_folders = db.get_all_folders()
+        
+        if not drive_folders:
+            await update.message.reply_text("📁 No folders found in Google Drive.")
+            return
+        
+        message = "📁 *Google Drive Folders:*\n\n"
+        
+        for folder in drive_folders:
+            folder_name = folder['name']
+            # Check if configured in database
+            db_folder = db.get_folder_by_drive_id(folder['id'])
+            
+            if db_folder:
+                folder_with_roles = db.get_folder_with_roles(db_folder['id'])
+                roles = folder_with_roles.get('roles', [])
+                if roles:
+                    message += f"✅ *{folder_name}*\n"
+                    message += f"   └ Roles: {', '.join(roles)}\n\n"
+                else:
+                    message += f"⚠️ *{folder_name}*\n"
+                    message += f"   └ No roles configured\n\n"
+            else:
+                message += f"❌ *{folder_name}*\n"
+                message += f"   └ Not configured (use /setfolder)\n\n"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+
+    async def sync_drive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Sync files from Google Drive (role-based)"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text("❌ You need to be registered. Use /start first.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        await update.message.reply_text("🔄 Syncing files from Google Drive...")
+        
+        # Get folders accessible to user's role
+        accessible_folders = db.get_folders_for_role(user["role"])
+        
+        if not accessible_folders:
+            await update.message.reply_text(
+                f"ℹ️ No folders configured for your role ({user['role']}).\n\n"
+                f"Ask an admin to configure folder access using /setfolder."
+            )
+            return
+        
+        total_files = 0
+        total_processed = 0
+        errors = []
+        
+        for folder in accessible_folders:
+            try:
+                folder_name = folder['folder_name']
+                drive_folder_id = folder['drive_folder_id']
+                
+                await update.message.reply_text(f"📂 Processing folder: {folder_name}...")
+                
+                # List files in folder
+                files = self.drive_sync.list_files_in_folder(drive_folder_id)
+                
+                if not files:
+                    continue
+                
+                files_synced = len(files)
+                files_processed_count = 0
+                
+                for file in files:
+                    try:
+                        # Get file content
+                        file_content = self.drive_sync.get_file_content(file)
+                        
+                        if not file_content:
+                            errors.append(f"{file['name']}: Failed to download")
+                            continue
+                        
+                        # Detect category
+                        category = self.drive_sync.detect_file_category(file['name'], folder_name)
+                        
+                        # Process based on file type
+                        extracted_text = ""
+                        file_type = "document"
+                        
+                        if file.get('mimeType', '').startswith('image/'):
+                            # Image file
+                            extracted_text = self.analyze_image(file_content, category)
+                            file_type = "photo"
+                        elif file.get('mimeType', '') == 'application/pdf' or file['name'].lower().endswith('.pdf'):
+                            # PDF file
+                            extracted_text = self.analyze_pdf(file_content, category)
+                            file_type = "document"
+                        elif file.get('mimeType', '').startswith('text/'):
+                            # Text file
+                            try:
+                                extracted_text = file_content.decode('utf-8')
+                            except:
+                                extracted_text = file_content.decode('latin-1')
+                            file_type = "document"
+                        else:
+                            # Try to extract text from PDF (if exported from Google Docs)
+                            if file_content[:4] == b'%PDF':
+                                extracted_text = self.analyze_pdf(file_content, category)
+                            else:
+                                # Try as text
+                                try:
+                                    extracted_text = file_content.decode('utf-8')
+                                except:
+                                    extracted_text = f"[Binary file: {file['name']}]"
+                        
+                        # Save to database
+                        content_data = {
+                            "type": file_type,
+                            "file_name": file['name'],
+                            "extracted_text": extracted_text,
+                            "source": "google_drive",
+                            "folder": folder_name,
+                        }
+                        
+                        db.add_entry(user_id, category, content_data)
+                        files_processed_count += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing file {file['name']}: {e}")
+                        errors.append(f"{file['name']}: {str(e)}")
+                
+                # Update sync time
+                db.update_folder_sync_time(folder['id'])
+                
+                # Log sync
+                error_str = "; ".join(errors[-10:]) if errors else None  # Last 10 errors
+                db.log_sync(
+                    folder_id=folder['id'],
+                    files_synced=files_synced,
+                    files_processed=files_processed_count,
+                    errors=error_str,
+                    synced_by=user_id
+                )
+                
+                total_files += files_synced
+                total_processed += files_processed_count
+                
+            except Exception as e:
+                logger.error(f"Error syncing folder {folder.get('folder_name', 'unknown')}: {e}")
+                errors.append(f"Folder {folder.get('folder_name', 'unknown')}: {str(e)}")
+        
+        # Report results
+        message = f"✅ *Sync Complete!*\n\n"
+        message += f"*Folders processed:* {len(accessible_folders)}\n"
+        message += f"*Files found:* {total_files}\n"
+        message += f"*Files processed:* {total_processed}\n"
+        
+        if errors:
+            message += f"\n*Errors:* {len(errors)}\n"
+            if len(errors) <= 5:
+                message += "\n".join([f"• {e}" for e in errors])
+            else:
+                message += "\n".join([f"• {e}" for e in errors[:5]])
+                message += f"\n... and {len(errors) - 5} more"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+
+    async def drive_folder_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show connected Google Drive folder info"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for admins only.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        message = "📁 *Google Drive Configuration*\n\n"
+        message += f"*Root Folder ID:* `{GOOGLE_DRIVE_ROOT_FOLDER_ID}`\n\n"
+        
+        # List folders
+        folders = self.drive_sync.list_folders()
+        message += f"*Folders found:* {len(folders)}\n"
+        
+        if folders:
+            message += "\n*Available folders:*\n"
+            for folder in folders[:10]:
+                message += f"• {folder['name']}\n"
+            if len(folders) > 10:
+                message += f"... and {len(folders) - 10} more\n"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+
+    async def sync_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show sync status for today"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if not user:
+            await update.message.reply_text("❌ You need to be registered. Use /start first.")
+            return
+        
+        logs = db.get_today_sync_logs()
+        
+        if not logs:
+            await update.message.reply_text("📊 *No syncs today.*\n\nUse /sync to sync files.", parse_mode="Markdown")
+            return
+        
+        message = "📊 *Today's Sync Status:*\n\n"
+        
+        for log in logs[:10]:
+            folder_name = log.get('folder_name', 'Unknown')
+            message += f"*{folder_name}* ({log.get('synced_at', '?')})\n"
+            message += f"  Files: {log.get('files_synced', 0)} found, {log.get('files_processed', 0)} processed\n"
+            if log.get('errors'):
+                message += f"  ⚠️ Errors: {log['errors'][:50]}...\n"
+            message += "\n"
+        
+        if len(logs) > 10:
+            message += f"... and {len(logs) - 10} more syncs"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+
     # ===== NO-SHOW REPORTING =====
 
     async def noshow_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2180,6 +2497,122 @@ Provide a summary of the main points:"""
             except Exception as e:
                 logger.error(f"Failed to notify admin {admin_id}: {e}")
 
+    async def morning_drive_sync_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Morning job to sync all configured folders from Google Drive"""
+        if not self.drive_sync:
+            logger.info("Google Drive sync not available, skipping morning sync")
+            return
+        
+        logger.info("Running morning Drive sync job...")
+        
+        # Get all configured folders
+        all_folders = db.get_all_folders()
+        
+        if not all_folders:
+            logger.info("No folders configured for sync")
+            return
+        
+        # Use first superadmin as the sync user (system sync)
+        sync_user_id = SUPER_ADMIN_IDS[0] if SUPER_ADMIN_IDS else None
+        
+        if not sync_user_id:
+            logger.warning("No superadmin IDs configured, cannot run system sync")
+            return
+        
+        total_files = 0
+        total_processed = 0
+        
+        for folder in all_folders:
+            try:
+                folder_name = folder['folder_name']
+                drive_folder_id = folder['drive_folder_id']
+                
+                logger.info(f"Syncing folder: {folder_name}")
+                
+                # List files in folder
+                files = self.drive_sync.list_files_in_folder(drive_folder_id)
+                
+                if not files:
+                    continue
+                
+                files_synced = len(files)
+                files_processed_count = 0
+                errors = []
+                
+                for file in files:
+                    try:
+                        # Get file content
+                        file_content = self.drive_sync.get_file_content(file)
+                        
+                        if not file_content:
+                            errors.append(f"{file['name']}: Failed to download")
+                            continue
+                        
+                        # Detect category
+                        category = self.drive_sync.detect_file_category(file['name'], folder_name)
+                        
+                        # Process based on file type
+                        extracted_text = ""
+                        file_type = "document"
+                        
+                        if file.get('mimeType', '').startswith('image/'):
+                            extracted_text = self.analyze_image(file_content, category)
+                            file_type = "photo"
+                        elif file.get('mimeType', '') == 'application/pdf' or file['name'].lower().endswith('.pdf'):
+                            extracted_text = self.analyze_pdf(file_content, category)
+                            file_type = "document"
+                        elif file.get('mimeType', '').startswith('text/'):
+                            try:
+                                extracted_text = file_content.decode('utf-8')
+                            except:
+                                extracted_text = file_content.decode('latin-1')
+                            file_type = "document"
+                        else:
+                            if file_content[:4] == b'%PDF':
+                                extracted_text = self.analyze_pdf(file_content, category)
+                            else:
+                                try:
+                                    extracted_text = file_content.decode('utf-8')
+                                except:
+                                    extracted_text = f"[Binary file: {file['name']}]"
+                        
+                        # Save to database
+                        content_data = {
+                            "type": file_type,
+                            "file_name": file['name'],
+                            "extracted_text": extracted_text,
+                            "source": "google_drive_auto",
+                            "folder": folder_name,
+                        }
+                        
+                        db.add_entry(sync_user_id, category, content_data)
+                        files_processed_count += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing file {file['name']}: {e}")
+                        errors.append(f"{file['name']}: {str(e)}")
+                
+                # Update sync time
+                db.update_folder_sync_time(folder['id'])
+                
+                # Log sync
+                error_str = "; ".join(errors[-10:]) if errors else None
+                db.log_sync(
+                    folder_id=folder['id'],
+                    files_synced=files_synced,
+                    files_processed=files_processed_count,
+                    errors=error_str,
+                    synced_by=sync_user_id
+                )
+                
+                total_files += files_synced
+                total_processed += files_processed_count
+                
+            except Exception as e:
+                logger.error(f"Error syncing folder {folder.get('folder_name', 'unknown')}: {e}")
+        
+        logger.info(f"Morning sync complete: {total_processed}/{total_files} files processed")
+
     def setup_handlers(self):
         """Setup all command and message handlers"""
 
@@ -2270,6 +2703,12 @@ Provide a summary of the main points:"""
         # Relief management commands
         self.app.add_handler(CommandHandler("reliefstatus", self.relief_status))
         self.app.add_handler(CommandHandler("cancelrelief", self.cancel_relief))
+        # Google Drive sync commands
+        self.app.add_handler(CommandHandler("setfolder", self.set_folder))
+        self.app.add_handler(CommandHandler("listfolders", self.list_folders))
+        self.app.add_handler(CommandHandler("sync", self.sync_drive))
+        self.app.add_handler(CommandHandler("drivefolder", self.drive_folder_info))
+        self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
         # Hidden super admin commands
         self.app.add_handler(CommandHandler("addsuperadmin", self.add_superadmin))
         self.app.add_handler(CommandHandler("removesuperadmin", self.remove_superadmin))
@@ -2328,6 +2767,15 @@ Provide a summary of the main points:"""
             first=10,  # Start after 10 seconds
             name="relief_reminders",
         )
+
+        # Schedule morning Drive sync
+        if self.drive_sync:
+            job_queue.run_daily(
+                self.morning_drive_sync_job,
+                time=time(hour=DRIVE_SYNC_HOUR, minute=0),
+                name="morning_drive_sync",
+            )
+            logger.info(f"Morning Drive sync scheduled for {DRIVE_SYNC_HOUR}:00")
 
         logger.info("Bot started successfully!")
 

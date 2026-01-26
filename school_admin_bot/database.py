@@ -130,6 +130,78 @@ class Database:
         """
         )
 
+        # Google Drive folders table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS drive_folders (
+                id SERIAL PRIMARY KEY,
+                folder_name TEXT NOT NULL UNIQUE,
+                drive_folder_id TEXT NOT NULL UNIQUE,
+                parent_folder_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_synced_at TIMESTAMP
+            )
+        """
+        )
+
+        # Folder-role access mapping (many-to-many)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS folder_role_access (
+                id SERIAL PRIMARY KEY,
+                folder_id INTEGER REFERENCES drive_folders(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(folder_id, role)
+            )
+        """
+        )
+
+        # User-folder access overrides (optional, for individual exceptions)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_folder_access (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL,
+                folder_id INTEGER REFERENCES drive_folders(id) ON DELETE CASCADE,
+                granted BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(telegram_id, folder_id),
+                FOREIGN KEY (telegram_id) REFERENCES users(telegram_id)
+            )
+        """
+        )
+
+        # Drive sync log
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS drive_sync_log (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL,
+                folder_id INTEGER REFERENCES drive_folders(id),
+                files_synced INTEGER DEFAULT 0,
+                files_processed INTEGER DEFAULT 0,
+                errors TEXT,
+                synced_by BIGINT,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+
+        # Create indexes
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_folder_role_access_folder 
+            ON folder_role_access(folder_id)
+        """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_folder_access_user 
+            ON user_folder_access(telegram_id)
+        """
+        )
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -776,6 +848,255 @@ class Database:
         conn.close()
 
         return [dict(r) for r in reports]
+
+    # ===== GOOGLE DRIVE FOLDER MANAGEMENT =====
+
+    def add_or_update_drive_folder(self, folder_name, drive_folder_id, parent_folder_id=None):
+        """Add or update a drive folder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO drive_folders (folder_name, drive_folder_id, parent_folder_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (drive_folder_id) 
+            DO UPDATE SET folder_name = EXCLUDED.folder_name, parent_folder_id = EXCLUDED.parent_folder_id
+            RETURNING id
+        """,
+            (folder_name, drive_folder_id, parent_folder_id),
+        )
+
+        folder_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return folder_id
+
+    def get_folder_by_name(self, folder_name):
+        """Get folder by name"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, folder_name, drive_folder_id, parent_folder_id, last_synced_at
+            FROM drive_folders 
+            WHERE folder_name = %s
+        """,
+            (folder_name,),
+        )
+
+        folder = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(folder) if folder else None
+
+    def get_folder_by_drive_id(self, drive_folder_id):
+        """Get folder by Google Drive ID"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, folder_name, drive_folder_id, parent_folder_id, last_synced_at
+            FROM drive_folders 
+            WHERE drive_folder_id = %s
+        """,
+            (drive_folder_id,),
+        )
+
+        folder = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(folder) if folder else None
+
+    def get_all_folders(self):
+        """Get all folders"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, folder_name, drive_folder_id, parent_folder_id, last_synced_at
+            FROM drive_folders 
+            ORDER BY folder_name
+        """
+        )
+
+        folders = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(f) for f in folders]
+
+    def set_folder_role_access(self, folder_id, roles):
+        """Set which roles can access a folder (replaces existing)"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        # Delete existing role access
+        cursor.execute(
+            """
+            DELETE FROM folder_role_access WHERE folder_id = %s
+        """,
+            (folder_id,),
+        )
+
+        # Add new role access
+        for role in roles:
+            cursor.execute(
+                """
+                INSERT INTO folder_role_access (folder_id, role)
+                VALUES (%s, %s)
+                ON CONFLICT (folder_id, role) DO NOTHING
+            """,
+                (folder_id, role.strip()),
+            )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def get_folders_for_role(self, role):
+        """Get all folders accessible to a role"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT DISTINCT df.id, df.folder_name, df.drive_folder_id, df.parent_folder_id, df.last_synced_at
+            FROM drive_folders df
+            INNER JOIN folder_role_access fra ON df.id = fra.folder_id
+            WHERE fra.role = %s
+            ORDER BY df.folder_name
+        """,
+            (role,),
+        )
+
+        folders = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(f) for f in folders]
+
+    def get_folder_with_roles(self, folder_id):
+        """Get folder with its role access list"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        # Get folder
+        cursor.execute(
+            """
+            SELECT id, folder_name, drive_folder_id, parent_folder_id, last_synced_at
+            FROM drive_folders 
+            WHERE id = %s
+        """,
+            (folder_id,),
+        )
+
+        folder = cursor.fetchone()
+        if not folder:
+            cursor.close()
+            conn.close()
+            return None
+
+        folder_dict = dict(folder)
+
+        # Get roles
+        cursor.execute(
+            """
+            SELECT role FROM folder_role_access WHERE folder_id = %s
+        """,
+            (folder_id,),
+        )
+
+        roles = [row["role"] for row in cursor.fetchall()]
+        folder_dict["roles"] = roles
+
+        cursor.close()
+        conn.close()
+
+        return folder_dict
+
+    def update_folder_sync_time(self, folder_id):
+        """Update last synced timestamp for a folder"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE drive_folders SET last_synced_at = CURRENT_TIMESTAMP WHERE id = %s
+        """,
+            (folder_id,),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def log_sync(self, folder_id, files_synced, files_processed, errors, synced_by):
+        """Log a sync operation"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            INSERT INTO drive_sync_log 
+            (date, folder_id, files_synced, files_processed, errors, synced_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+            (today, folder_id, files_synced, files_processed, errors, synced_by),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def get_today_sync_logs(self, folder_id=None):
+        """Get sync logs for today"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        today = date.today()
+
+        if folder_id:
+            cursor.execute(
+                """
+                SELECT sl.id, sl.files_synced, sl.files_processed, sl.errors, 
+                       sl.synced_by, TO_CHAR(sl.synced_at, 'HH24:MI') as synced_at,
+                       df.folder_name
+                FROM drive_sync_log sl
+                LEFT JOIN drive_folders df ON sl.folder_id = df.id
+                WHERE sl.date = %s AND sl.folder_id = %s
+                ORDER BY sl.synced_at DESC
+            """,
+                (today, folder_id),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT sl.id, sl.files_synced, sl.files_processed, sl.errors, 
+                       sl.synced_by, TO_CHAR(sl.synced_at, 'HH24:MI') as synced_at,
+                       df.folder_name
+                FROM drive_sync_log sl
+                LEFT JOIN drive_folders df ON sl.folder_id = df.id
+                WHERE sl.date = %s
+                ORDER BY sl.synced_at DESC
+            """,
+                (today,),
+            )
+
+        logs = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(l) for l in logs]
 
     # ===== STATISTICS =====
 

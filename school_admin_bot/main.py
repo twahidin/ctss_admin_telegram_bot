@@ -452,7 +452,8 @@ Text to parse:
         help_text += "/listfolders - View folder access configuration\n"
         help_text += "\n*Relief Management:*\n"
         help_text += "/reliefstatus - View today's relief reminders\n"
-        help_text += "/cancelrelief - Cancel all relief reminders\n"
+        help_text += "/cancelrelief - Cancel all relief reminders\n\n"
+        help_text += "*Note:* Relief members can also use relief management commands."
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -1080,8 +1081,8 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["admin", "superadmin"]:
-            await update.message.reply_text("❌ This command is for admins only.")
+        if not user or user["role"] not in ["relief_member", "admin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for relief members and admins only.")
             return
         
         reminders = db.get_today_relief_reminders()
@@ -1150,8 +1151,8 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["admin", "superadmin"]:
-            await update.message.reply_text("❌ This command is for admins only.")
+        if not user or user["role"] not in ["relief_member", "admin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for relief members and admins only.")
             return
         
         deactivated = db.deactivate_all_reminders_today()

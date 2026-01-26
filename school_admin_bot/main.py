@@ -422,31 +422,34 @@ Text to parse:
         help_text += "/noshow - Report a no-show relief teacher\n"
         help_text += "/help - Show this help message\n"
 
-        # Uploader commands
-        if role in ["uploader", "uploadadmin", "superadmin"]:
-            help_text += "\n*Uploader Commands:*\n"
+        # Admin upload commands (only admin and superadmin can upload)
+        if role in ["admin", "superadmin"]:
+            help_text += "\n*Admin Commands:*\n"
             help_text += "/upload - Upload new or remove information\n"
             help_text += "/myuploads - See your uploads today\n"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
     async def admin_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show admin help - for upload admins"""
+        """Show admin help - for admins"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ This command is for admins only.")
             return
 
         help_text = "🔧 *ADMIN COMMANDS*\n\n"
         help_text += "*User Management:*\n"
-        help_text += "/add [user_id] [name] - Add a new viewer\n"
+        help_text += "/add [user_id] [name] - Add a new user\n"
         help_text += "  └ Example: /add 123456789 John Teacher\n"
         help_text += "/remove [user_id] - Remove a user\n"
         help_text += "/promote [user_id] [role] - Change user role\n"
-        help_text += "  └ Roles: viewer, uploader, uploadadmin\n"
+        help_text += "  └ Roles: viewer, relief_member, admin\n"
         help_text += "/list - Show all registered users\n"
+        help_text += "\n*Google Drive:*\n"
+        help_text += "/sync - Sync files from accessible folders\n"
+        help_text += "/listfolders - View folder access configuration\n"
         help_text += "\n*Relief Management:*\n"
         help_text += "/reliefstatus - View today's relief reminders\n"
         help_text += "/cancelrelief - Cancel all relief reminders\n"
@@ -465,9 +468,13 @@ Text to parse:
         help_text += "*User Management:*\n"
         help_text += "/massupload - Upload CSV to replace all users\n"
         help_text += "  └ CSV format: telegram\\_id,name,role\n"
+        help_text += "  └ Roles: viewer, relief\\_member, admin\n"
         help_text += "/addsuperadmin [user_id] - Add a super admin\n"
         help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
         help_text += "/listsuperadmins - List all super admins\n\n"
+        help_text += "*Google Drive:*\n"
+        help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
+        help_text += "/listfolders - View all folders and access\n\n"
         help_text += "*System:*\n"
         help_text += "/stats - Show usage statistics\n"
         help_text += "/purge - Manually purge old data\n\n"
@@ -480,7 +487,7 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploader", "uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ You don't have upload permissions.")
             return ConversationHandler.END
 
@@ -821,7 +828,7 @@ Text to parse:
         # If this is a RELIEF upload and user is admin/superadmin, offer to set up reminders
         if selected_tag == "RELIEF":
             user = db.get_user(user_id)
-            if user and user["role"] in ["admin", "uploadadmin", "superadmin"]:
+            if user and user["role"] in ["admin", "superadmin"]:
                 try:
                     await update.message.reply_text("🔍 Parsing relief information for reminders...")
                     
@@ -1173,8 +1180,11 @@ Text to parse:
         if len(context.args) < 2:
             await update.message.reply_text(
                 "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
-                "Example: /setfolder \"Relief Timetable\" admin,uploadadmin\n\n"
-                "Available roles: viewer, uploader, uploadadmin, admin, superadmin"
+                "Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
+                "Available roles: viewer, relief_member, admin, superadmin\n\n"
+                "Note: Relief Committee folder access is automatically managed:\n"
+                "- Relief Committee: relief_member, admin, superadmin only\n"
+                "- Other folders: viewer, relief_member, admin, superadmin"
             )
             return
         
@@ -1184,7 +1194,7 @@ Text to parse:
         roles = [r.strip() for r in roles_str.split(",")]
         
         # Validate roles
-        valid_roles = ["viewer", "uploader", "uploadadmin", "admin", "superadmin"]
+        valid_roles = ["viewer", "relief_member", "admin", "superadmin"]
         invalid_roles = [r for r in roles if r not in valid_roles]
         if invalid_roles:
             await update.message.reply_text(
@@ -1225,7 +1235,7 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ This command is for admins only.")
             return
         
@@ -1278,13 +1288,30 @@ Text to parse:
         
         await update.message.reply_text("🔄 Syncing files from Google Drive...")
         
-        # Get folders accessible to user's role
-        accessible_folders = db.get_folders_for_role(user["role"])
+        # Get folders accessible to user's role based on new rules:
+        # - Relief Committee: Only relief_member, admin, superadmin
+        # - All other folders: viewer, relief_member, admin, superadmin
+        all_folders = db.get_all_folders()
+        accessible_folders = []
+        
+        for folder in all_folders:
+            folder_name = folder['folder_name'].lower()
+            is_relief_committee = 'relief committee' in folder_name
+            
+            if is_relief_committee:
+                # Relief Committee: only relief_member, admin, superadmin
+                if user["role"] in ["relief_member", "admin", "superadmin"]:
+                    accessible_folders.append(folder)
+            else:
+                # Other folders: viewer, relief_member, admin, superadmin
+                if user["role"] in ["viewer", "relief_member", "admin", "superadmin"]:
+                    accessible_folders.append(folder)
         
         if not accessible_folders:
             await update.message.reply_text(
-                f"ℹ️ No folders configured for your role ({user['role']}).\n\n"
-                f"Ask an admin to configure folder access using /setfolder."
+                f"ℹ️ No folders accessible for your role ({user['role']}).\n\n"
+                f"Viewers and relief_members can access all folders except Relief Committee.\n"
+                f"Relief Committee is only accessible to relief_member, admin, and superadmin."
             )
             return
         
@@ -1407,7 +1434,7 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ This command is for admins only.")
             return
         
@@ -1639,7 +1666,7 @@ Text to parse:
         
         # Get all admins and superadmins
         all_users = db.get_all_users()
-        admin_ids = [u["telegram_id"] for u in all_users if u["role"] in ["admin", "uploadadmin", "superadmin"]]
+        admin_ids = [u["telegram_id"] for u in all_users if u["role"] in ["admin", "superadmin"]]
         
         # Also include super admin IDs from config
         admin_ids.extend(SUPER_ADMIN_IDS)
@@ -1682,11 +1709,14 @@ Text to parse:
         await update.message.reply_text("🔍 Searching today's information...")
 
         # Get today's entries
-        entries = db.get_today_entries()
+        all_entries = db.get_today_entries()
+
+        # Filter entries based on folder access rules
+        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
 
         if not entries:
             await update.message.reply_text(
-                "📭 No information has been uploaded for today yet."
+                "📭 No information accessible for your role today."
             )
             return
 
@@ -1723,6 +1753,35 @@ Provide a direct, concise answer. If the information isn't available, say so cle
                 "❌ Sorry, I encountered an error processing your query.\n\n"
                 f"Raw entries found: {len(entries)}"
             )
+
+    def _filter_entries_by_folder_access(self, entries, user_role):
+        """
+        Filter entries based on folder access rules:
+        - Relief Committee: Only relief_member, admin, superadmin
+        - All other folders: viewer, relief_member, admin, superadmin
+        """
+        filtered = []
+        
+        for entry in entries:
+            content_data = entry.get("content", {})
+            folder = content_data.get("folder", "").lower()
+            
+            # Check if entry is from Relief Committee folder
+            is_relief_committee = "relief committee" in folder
+            
+            if is_relief_committee:
+                # Relief Committee: only relief_member, admin, superadmin
+                if user_role in ["relief_member", "admin", "superadmin"]:
+                    filtered.append(entry)
+            else:
+                # Other folders: viewer, relief_member, admin, superadmin
+                if user_role in ["viewer", "relief_member", "admin", "superadmin"]:
+                    filtered.append(entry)
+                # Also include entries uploaded via Telegram (no folder field)
+                elif "folder" not in content_data:
+                    filtered.append(entry)
+        
+        return filtered
 
     def _build_context_for_claude(self, entries, query):
         """Build context string from entries, filtering by relevance"""
@@ -1761,10 +1820,13 @@ Provide a direct, concise answer. If the information isn't available, say so cle
             await update.message.reply_text("❌ Not registered. Use /start first.")
             return
 
-        entries = db.get_today_entries()
+        all_entries = db.get_today_entries()
+
+        # Filter entries based on folder access rules
+        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
 
         if not entries:
-            await update.message.reply_text("📭 No information uploaded today.")
+            await update.message.reply_text("📭 No information accessible for your role today.")
             return
 
         # Count by tag
@@ -1870,7 +1932,7 @@ Provide a summary of the main points:"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploader", "uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ You don't have upload permissions.")
             return
 
@@ -1886,7 +1948,7 @@ Provide a summary of the main points:"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ You don't have permission to add users.")
             return
 
@@ -1940,7 +2002,7 @@ Provide a summary of the main points:"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text(
                 "❌ You don't have permission to remove users."
             )
@@ -1996,7 +2058,7 @@ Provide a summary of the main points:"""
         user_id = query.from_user.id
         user = db.get_user(user_id)
         
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await query.edit_message_text("❌ You don't have permission for this action.")
             return
         
@@ -2092,7 +2154,7 @@ Provide a summary of the main points:"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ You don't have permission to list users.")
             return
 
@@ -2112,7 +2174,7 @@ Provide a summary of the main points:"""
 
         message = "👥 <b>REGISTERED USERS</b>\n\n"
 
-        for role in ["superadmin", "uploadadmin", "uploader", "viewer"]:
+        for role in ["superadmin", "admin", "relief_member", "viewer"]:
             if role in role_groups:
                 message += f"<b>{role.upper()}:</b>\n"
                 for u in role_groups[role]:
@@ -2135,7 +2197,7 @@ Provide a summary of the main points:"""
         if len(context.args) < 2:
             await update.message.reply_text(
                 "Usage: /promote [user_id] [role]\n\n"
-                "Roles: viewer, uploader, uploadadmin\n"
+                "Roles: viewer, relief_member, admin\n"
                 "Example: /promote 123456789 uploader"
             )
             return
@@ -2144,7 +2206,7 @@ Provide a summary of the main points:"""
             target_user_id = int(context.args[0])
             new_role = context.args[1].lower()
 
-            if new_role not in ["viewer", "uploader", "uploadadmin"]:
+            if new_role not in ["viewer", "relief_member", "admin"]:
                 await update.message.reply_text(
                     "❌ Invalid role. Use: viewer, uploader, or uploadadmin"
                 )
@@ -2215,8 +2277,8 @@ Provide a summary of the main points:"""
         message = "📊 *BOT STATISTICS*\n\n"
         message += f"Total Users: {stats['total_users']}\n"
         message += f"• Super Admins: {stats['superadmins']}\n"
-        message += f"• Upload Admins: {stats['uploadadmins']}\n"
-        message += f"• Uploaders: {stats['uploaders']}\n"
+        message += f"• Admins: {stats.get('admin', 0)}\n"
+        message += f"• Relief Members: {stats.get('relief_member', 0)}\n"
         message += f"• Viewers: {stats['viewers']}\n\n"
         message += f"Today's Entries: {stats['today_entries']}"
 
@@ -2243,7 +2305,7 @@ Provide a summary of the main points:"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["uploader", "uploadadmin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin"]:
             await update.message.reply_text("❌ You don't have upload permissions.")
             return
 
@@ -2279,12 +2341,12 @@ Provide a summary of the main points:"""
             "`telegram_id,name,role`\n\n"
             "Example:\n"
             "```\n"
-            "123456789,John Teacher,uploader\n"
-            "987654321,Jane Admin,uploadadmin\n"
-            "111222333,Bob Viewer,viewer\n"
+            "123456789,John Teacher,viewer\n"
+            "987654321,Jane Admin,admin\n"
+            "111222333,Bob Relief,relief_member\n"
             "```\n\n"
             "⚠️ *Warning:* This will REPLACE all existing users except super admins.\n\n"
-            "Valid roles: `viewer`, `uploader`, `uploadadmin`\n\n"
+            "Valid roles: `viewer`, `relief_member`, `admin`\n\n"
             "Send /cancel to abort.",
             parse_mode="Markdown"
         )
@@ -2334,7 +2396,7 @@ Provide a summary of the main points:"""
                     role = parts[2].strip().lower()
                     
                     # Validate role
-                    if role not in ['viewer', 'uploader', 'uploadadmin']:
+                    if role not in ['viewer', 'relief_member', 'admin']:
                         errors.append(f"Line {i}: Invalid role '{role}'")
                         continue
                     

@@ -1135,8 +1135,8 @@ class Database:
         return {
             "total_users": sum(role_counts.values()),
             "superadmins": role_counts.get("superadmin", 0),
-            "uploadadmins": role_counts.get("uploadadmin", 0),
-            "uploaders": role_counts.get("uploader", 0),
+            "admin": role_counts.get("admin", 0),
+            "relief_member": role_counts.get("relief_member", 0),
             "viewers": role_counts.get("viewer", 0),
             "today_entries": today_count,
         }

@@ -1777,10 +1777,21 @@ Text to parse:
         """Assume a different role for testing (superadmin only)"""
         user_id = update.effective_user.id
         
-        # Check if user is superadmin (check both config and database role)
+        # Check if user is superadmin (check both config and actual database role)
         is_protected_superadmin = user_id in SUPER_ADMIN_IDS
-        user = db.get_user(user_id)
-        is_superadmin_role = user and user.get('original_role' if user.get('is_assumed') else 'role') == 'superadmin'
+        
+        # Get actual role from database (not assumed role)
+        conn = db.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            "SELECT role FROM users WHERE telegram_id = %s",
+            (user_id,)
+        )
+        user_row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        is_superadmin_role = user_row and user_row['role'] == 'superadmin' if user_row else False
         
         if not (is_protected_superadmin or is_superadmin_role):
             await update.message.reply_text(

@@ -1339,25 +1339,50 @@ Text to parse:
         if len(context.args) < 2:
             await update.message.reply_text(
                 "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
-                "Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
+                "Example: /setfolder \"Relief Committee\" relief_member,admin\n\n"
                 "Available roles: viewer, relief_member, admin, superadmin\n\n"
-                "Note: All folders are accessible to relief_member, admin, and superadmin only.\n"
-                "Viewers can only query data that has been synced."
+                "⚠️ Use *quotes* around folder names with spaces (e.g. \"Relief Committee\").",
+                parse_mode="Markdown"
             )
             return
         
-        # Parse folder name (may be quoted)
-        folder_name = context.args[0].strip('"\'')
-        roles_str = " ".join(context.args[1:])
-        roles = [r.strip() for r in roles_str.split(",")]
-        
-        # Validate roles
         valid_roles = ["viewer", "relief_member", "admin", "superadmin"]
-        invalid_roles = [r for r in roles if r not in valid_roles]
-        if invalid_roles:
+        raw_args = [a.strip('"\'') for a in context.args]
+        
+        # Parse: folder name may be one or more words; rest are role1,role2,...
+        folder_name = None
+        roles = None
+        # If first arg looks like a single quoted folder name (no comma), use it and rest as roles
+        if len(raw_args) >= 2:
+            roles_str = " ".join(raw_args[1:])
+            roles = [r.strip() for r in roles_str.split(",")]
+            invalid = [r for r in roles if r not in valid_roles]
+            if not invalid:
+                folder_name = raw_args[0]
+        
+        # If that failed (e.g. multi-word folder without quotes), try joining words until roles are valid
+        if folder_name is None and len(raw_args) >= 2:
+            for i in range(1, len(raw_args)):
+                folder_name = " ".join(raw_args[:i])
+                roles_str = " ".join(raw_args[i:])
+                roles = [r.strip() for r in roles_str.split(",")]
+                invalid = [r for r in roles if r not in valid_roles]
+                if not invalid:
+                    break
+            else:
+                folder_name = None
+                roles = [r.strip() for r in " ".join(raw_args[1:]).split(",")]
+                invalid_roles = [r for r in roles if r not in valid_roles]
+                await update.message.reply_text(
+                    f"❌ Invalid roles: {', '.join(invalid_roles)}\n\n"
+                    f"Valid roles: {', '.join(valid_roles)}\n\n"
+                    f"💡 If the folder name has spaces, use quotes: /setfolder \"Relief Committee\" relief_member,admin"
+                )
+                return
+        
+        if folder_name is None or not roles:
             await update.message.reply_text(
-                f"❌ Invalid roles: {', '.join(invalid_roles)}\n\n"
-                f"Valid roles: {', '.join(valid_roles)}"
+                "❌ Could not parse folder name and roles. Use: /setfolder \"Folder Name\" role1,role2"
             )
             return
         
@@ -1366,7 +1391,8 @@ Text to parse:
         if not folder:
             await update.message.reply_text(
                 f"❌ Folder '{folder_name}' not found in Google Drive.\n\n"
-                f"Use /listfolders to see available folders."
+                f"Use /listfolders to see available folders.\n\n"
+                f"💡 Check spelling (e.g. \"Committee\" not \"Commitee\")."
             )
             return
         

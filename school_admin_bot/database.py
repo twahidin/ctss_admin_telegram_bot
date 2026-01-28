@@ -277,13 +277,19 @@ class Database:
         conn.close()
 
     def get_user(self, telegram_id):
-        """Get user by telegram ID"""
+        """Get user by telegram ID, with role assumption if active"""
         conn = self.get_connection()
         cursor = conn.cursor(row_factory=dict_row)
 
         cursor.execute(
             """
-            SELECT * FROM users WHERE telegram_id = %s
+            SELECT u.telegram_id, u.display_name, u.role, u.added_by, u.added_date,
+                   COALESCE(ra.assumed_role, u.role) as effective_role,
+                   ra.assumed_role IS NOT NULL as is_assumed,
+                   ra.original_role
+            FROM users u
+            LEFT JOIN role_assumptions ra ON u.telegram_id = ra.telegram_id
+            WHERE u.telegram_id = %s
         """,
             (telegram_id,),
         )
@@ -292,7 +298,14 @@ class Database:
         cursor.close()
         conn.close()
 
-        return dict(user) if user else None
+        if user:
+            user_dict = dict(user)
+            # Use effective_role for role checks, but keep original role
+            if user_dict.get('is_assumed'):
+                user_dict['original_role'] = user_dict.get('original_role') or user_dict['role']
+                user_dict['role'] = user_dict['effective_role']
+            return user_dict
+        return None
 
     def remove_user(self, telegram_id):
         """Remove a user"""

@@ -1836,7 +1836,7 @@ Text to parse:
                     f"*Channel ID:* `{channel_id}`\n"
                     f"*Status:* Active\n"
                     f"*Auto-sync:* Enabled\n\n"
-                    f"Files will now sync automatically when changed in Google Drive.\n"
+                    f"Google Docs, Sheets, PDFs, and images will sync automatically when modified or uploaded in any folder under the root.\n"
                     f"Webhook expires: {expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'Never'}",
                     parse_mode="Markdown"
                 )

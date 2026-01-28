@@ -221,6 +221,20 @@ class Database:
         """
         )
 
+        # Role assumption for superadmins (testing feature)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS role_assumptions (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL UNIQUE,
+                original_role TEXT NOT NULL,
+                assumed_role TEXT NOT NULL,
+                assumed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (telegram_id) REFERENCES users(telegram_id) ON DELETE CASCADE
+            )
+        """
+        )
+
         # Create indexes
         cursor.execute(
             """

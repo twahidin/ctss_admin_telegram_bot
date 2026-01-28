@@ -597,6 +597,11 @@ Text to parse:
             help_text += "/registerwebhook - Register webhook for auto\\-sync on file changes\n"
             help_text += "  └ Requires WEBHOOK_URL environment variable\n"
             help_text += "/webhookstatus - Check webhook status and health\n\n"
+            help_text += "*Testing & Debugging:*\n"
+            help_text += "/assume [role] - Assume a different role for testing\n"
+            help_text += "  └ Roles: viewer, relief_member, admin\n"
+            help_text += "  └ Example: /assume viewer\n"
+            help_text += "/resume - Resume your original superadmin role\n\n"
             help_text += "*System Management:*\n"
             help_text += "/stats - Show bot usage statistics\n"
             help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
@@ -1767,6 +1772,107 @@ Text to parse:
                 f"Check Railway logs for full details.",
                 parse_mode="Markdown"
             )
+
+    async def assume_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Assume a different role for testing (superadmin only)"""
+        user_id = update.effective_user.id
+        
+        # Check if user is superadmin (check both config and database role)
+        is_protected_superadmin = user_id in SUPER_ADMIN_IDS
+        user = db.get_user(user_id)
+        is_superadmin_role = user and user.get('original_role' if user.get('is_assumed') else 'role') == 'superadmin'
+        
+        if not (is_protected_superadmin or is_superadmin_role):
+            await update.message.reply_text(
+                "❌ This command is for superadmins only."
+            )
+            return
+        
+        # Get the role to assume from command arguments
+        if not context.args or len(context.args) < 1:
+            await update.message.reply_text(
+                "❌ *Usage:* `/assume [role]`\n\n"
+                "Available roles:\n"
+                "• `viewer`\n"
+                "• `relief_member`\n"
+                "• `admin`\n\n"
+                "Example: `/assume viewer`",
+                parse_mode="Markdown"
+            )
+            return
+        
+        role_to_assume = context.args[0].lower()
+        valid_roles = ['viewer', 'relief_member', 'admin']
+        
+        if role_to_assume not in valid_roles:
+            await update.message.reply_text(
+                f"❌ Invalid role: `{role_to_assume}`\n\n"
+                f"Valid roles: {', '.join(valid_roles)}",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Get original role (before any assumption)
+        original_user = db.get_user(user_id)
+        if not original_user:
+            await update.message.reply_text("❌ User not found in database.")
+            return
+        
+        # Get true original role (not assumed)
+        if original_user.get('is_assumed'):
+            # Already assuming a role, get the stored original
+            assumption = db.get_role_assumption(user_id)
+            original_role = assumption['original_role'] if assumption else original_user.get('original_role', 'superadmin')
+        else:
+            original_role = original_user['role']
+        
+        # Store assumption
+        db.assume_role(user_id, role_to_assume, original_role)
+        
+        await update.message.reply_text(
+            f"✅ *Role Assumed*\n\n"
+            f"*Original role:* {original_role}\n"
+            f"*Assumed role:* {role_to_assume}\n\n"
+            f"You now have the permissions of a `{role_to_assume}`.\n"
+            f"Use `/resume` to restore your original role.",
+            parse_mode="Markdown"
+        )
+
+    async def resume_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Resume original superadmin role"""
+        user_id = update.effective_user.id
+        
+        # Check if user is superadmin (check both config and database role)
+        is_protected_superadmin = user_id in SUPER_ADMIN_IDS
+        user = db.get_user(user_id)
+        
+        # Get true original role
+        assumption = db.get_role_assumption(user_id)
+        if not assumption:
+            await update.message.reply_text(
+                "ℹ️ You are not currently assuming any role.\n"
+                "Your current role is your actual role."
+            )
+            return
+        
+        original_role = assumption['original_role']
+        is_superadmin_role = original_role == 'superadmin'
+        
+        if not (is_protected_superadmin or is_superadmin_role):
+            await update.message.reply_text(
+                "❌ This command is for superadmins only."
+            )
+            return
+        
+        # Resume original role
+        db.resume_role(user_id)
+        
+        await update.message.reply_text(
+            f"✅ *Role Resumed*\n\n"
+            f"*Restored role:* {original_role}\n\n"
+            f"You now have your original superadmin permissions back.",
+            parse_mode="Markdown"
+        )
 
     async def webhook_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Check webhook status and health (superadmin only)"""
@@ -3079,6 +3185,8 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
         self.app.add_handler(CommandHandler("registerwebhook", self.register_webhook))
         self.app.add_handler(CommandHandler("webhookstatus", self.webhook_status))
+        self.app.add_handler(CommandHandler("assume", self.assume_role))
+        self.app.add_handler(CommandHandler("resume", self.resume_role))
         # Hidden super admin commands
         self.app.add_handler(CommandHandler("addsuperadmin", self.add_superadmin))
         self.app.add_handler(CommandHandler("removesuperadmin", self.remove_superadmin))

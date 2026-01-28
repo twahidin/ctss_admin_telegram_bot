@@ -580,7 +580,8 @@ Text to parse:
         help_text += "  └ Available roles: viewer, relief\\_member, admin, superadmin\n"
         help_text += "/listfolders - View all folders and their access configuration\n"
         help_text += "/registerwebhook - Register webhook for auto\\-sync on file changes\n"
-        help_text += "  └ Requires WEBHOOK_URL environment variable\n\n"
+        help_text += "  └ Requires WEBHOOK_URL environment variable\n"
+        help_text += "/webhookstatus - Check webhook status and health\n\n"
         help_text += "*System Management:*\n"
         help_text += "/stats - Show bot usage statistics\n"
         help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
@@ -1666,11 +1667,184 @@ Text to parse:
                     "❌ Failed to register webhook. Check logs for details."
                 )
                 
-        except Exception as e:
-            logger.error(f"Error registering webhook: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"Error registering webhook: {e}", exc_info=True)
+                await update.message.reply_text(
+                    f"❌ Error registering webhook: {str(e)}"
+                )
+
+    async def webhook_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Check webhook status and health (superadmin only)"""
+        user_id = update.effective_user.id
+        
+        if user_id not in SUPER_ADMIN_IDS:
+            await update.message.reply_text("❌ This command is for protected super admins only.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        from config import WEBHOOK_URL
+        from datetime import datetime
+        
+        if not WEBHOOK_URL:
             await update.message.reply_text(
-                f"❌ Error registering webhook: {str(e)}"
+                "❌ *Webhook not configured*\n\n"
+                "Please set `WEBHOOK_URL` environment variable.",
+                parse_mode="Markdown"
             )
+            return
+        
+        # Get all active webhooks
+        webhooks = db.get_all_active_webhooks()
+        
+        if not webhooks:
+            await update.message.reply_text(
+                "⚠️ *No active webhooks*\n\n"
+                "Use `/registerwebhook` to register a webhook.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        message = "📊 *Webhook Status*\n\n"
+        message += f"*Webhook URL:* `{WEBHOOK_URL}`\n\n"
+        
+        now = datetime.now()
+        for webhook in webhooks:
+            expires_at = webhook.get('expires_at')
+            if expires_at:
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                
+                time_until_expiry = expires_at - now
+                hours_remaining = time_until_expiry.total_seconds() / 3600
+                
+                if hours_remaining < 0:
+                    status = "❌ Expired"
+                elif hours_remaining < 24:
+                    status = f"⚠️ Expires in {int(hours_remaining)}h"
+                else:
+                    status = f"✅ Active ({int(hours_remaining/24)}d remaining)"
+            else:
+                status = "✅ Active (no expiry)"
+            
+            message += f"*Channel:* `{webhook['channel_id'][:16]}...`\n"
+            message += f"*Status:* {status}\n"
+            if expires_at:
+                message += f"*Expires:* {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n"
+            message += f"*Folder ID:* `{webhook['folder_id'][:20]}...`\n\n"
+        
+        # Check recent sync activity
+        from database import Database
+        sync_logs = db.get_today_sync_logs()
+        webhook_syncs = [log for log in sync_logs if log.get('synced_by') is None or log.get('errors', '').find('webhook') != -1]
+        
+        if webhook_syncs:
+            message += f"*Recent webhook syncs today:* {len(webhook_syncs)}\n"
+            latest = webhook_syncs[0]
+            message += f"Last: {latest.get('synced_at', 'N/A')} - {latest.get('files_processed', 0)} files\n"
+        else:
+            message += "*Recent webhook syncs:* None today\n"
+        
+        message += "\n💡 *Tip:* Webhooks auto-renew 24h before expiry"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+
+    def webhook_renewal_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Auto-renew webhooks that are expiring soon"""
+        try:
+            from config import WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID
+            from datetime import datetime, timedelta
+            
+            if not WEBHOOK_URL or not self.drive_sync:
+                return
+            
+            # Get all active webhooks
+            webhooks = db.get_all_active_webhooks()
+            now = datetime.now()
+            
+            for webhook in webhooks:
+                expires_at = webhook.get('expires_at')
+                if not expires_at:
+                    continue
+                
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                
+                # Renew if expiring within 24 hours
+                time_until_expiry = expires_at - now
+                hours_remaining = time_until_expiry.total_seconds() / 3600
+                
+                if hours_remaining < 24 and hours_remaining > 0:
+                    logger.info(f"Auto-renewing webhook {webhook['channel_id']} (expires in {int(hours_remaining)}h)")
+                    
+                    try:
+                        # Stop old webhook
+                        if webhook.get('resource_id'):
+                            self.drive_sync.stop_webhook(
+                                webhook['channel_id'],
+                                webhook['resource_id']
+                            )
+                        
+                        # Register new webhook
+                        result = self.drive_sync.register_webhook(
+                            WEBHOOK_URL,
+                            webhook['folder_id']
+                        )
+                        
+                        if result:
+                            channel_id = result.get('id')
+                            resource_id = result.get('resourceId')
+                            expiration = result.get('expiration')
+                            
+                            # Get page token
+                            changes_result = self.drive_sync.get_changes()
+                            page_token = changes_result.get('newStartPageToken')
+                            
+                            expires_at_new = None
+                            if expiration:
+                                expires_at_new = datetime.fromtimestamp(int(expiration) / 1000)
+                            
+                            # Save new webhook
+                            db.save_webhook(
+                                folder_id=webhook['folder_id'],
+                                channel_id=channel_id,
+                                resource_id=resource_id,
+                                webhook_url=WEBHOOK_URL,
+                                page_token=page_token,
+                                expires_at=expires_at_new
+                            )
+                            
+                            # Deactivate old webhook
+                            db.deactivate_webhook(webhook['channel_id'])
+                            
+                            logger.info(f"Successfully renewed webhook: {channel_id}")
+                            
+                            # Notify superadmins
+                            from config import SUPER_ADMIN_IDS
+                            for admin_id in SUPER_ADMIN_IDS:
+                                try:
+                                    context.bot.send_message(
+                                        admin_id,
+                                        f"✅ Webhook auto-renewed successfully!\n"
+                                        f"New expiry: {expires_at_new.strftime('%Y-%m-%d %H:%M UTC') if expires_at_new else 'Never'}"
+                                    )
+                                except:
+                                    pass
+                        else:
+                            logger.error(f"Failed to renew webhook {webhook['channel_id']}")
+                            
+                    except Exception as e:
+                        logger.error(f"Error renewing webhook {webhook['channel_id']}: {e}", exc_info=True)
+                
+                elif hours_remaining < 0:
+                    # Expired webhook - deactivate
+                    logger.warning(f"Deactivating expired webhook: {webhook['channel_id']}")
+                    db.deactivate_webhook(webhook['channel_id'])
+                    
+        except Exception as e:
+            logger.error(f"Error in webhook renewal job: {e}", exc_info=True)
 
     async def sync_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show sync status for today"""
@@ -2753,6 +2927,7 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("drivefolder", self.drive_folder_info))
         self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
         self.app.add_handler(CommandHandler("registerwebhook", self.register_webhook))
+        self.app.add_handler(CommandHandler("webhookstatus", self.webhook_status))
         # Hidden super admin commands
         self.app.add_handler(CommandHandler("addsuperadmin", self.add_superadmin))
         self.app.add_handler(CommandHandler("removesuperadmin", self.remove_superadmin))
@@ -2820,11 +2995,22 @@ Provide a summary of the main points:"""
                 name="morning_drive_sync",
             )
             logger.info(f"Morning Drive sync scheduled for {DRIVE_SYNC_HOUR}:00")
+            
+            # Schedule webhook auto-renewal (check every 6 hours)
+            job_queue.run_repeating(
+                self.webhook_renewal_job,
+                interval=21600,  # 6 hours
+                first=300,  # Start after 5 minutes
+                name="webhook_renewal",
+            )
+            logger.info("Webhook auto-renewal scheduled (every 6 hours)")
 
         logger.info("Bot started successfully!")
 
         # Start webhook server in background thread if configured
         from config import WEBHOOK_URL
+        webhook_port = os.getenv('PORT', '5000')
+        
         if WEBHOOK_URL:
             try:
                 from webhook_handler import webhook_app, set_bot_instance, set_analysis_functions
@@ -2835,16 +3021,17 @@ Provide a summary of the main points:"""
                 set_analysis_functions(self.analyze_image, self.analyze_pdf)
                 
                 # Start Flask server in background thread
+                # Railway provides PORT env var (typically 8080)
                 def run_webhook_server():
-                    webhook_app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5000')), debug=False, use_reloader=False)
+                    webhook_app.run(host='0.0.0.0', port=int(webhook_port), debug=False, use_reloader=False)
                 
                 webhook_thread = threading.Thread(target=run_webhook_server, daemon=True)
                 webhook_thread.start()
-                logger.info(f"Webhook server started on port {os.getenv('PORT', '5000')}")
+                logger.info(f"Webhook server started on port {webhook_port} (Railway PORT env var)")
             except Exception as e:
                 logger.warning(f"Failed to start webhook server: {e}")
 
-        # Start polling
+        # Start polling (this blocks, but Flask runs in background thread)
         self.app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

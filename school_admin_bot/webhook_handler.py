@@ -39,9 +39,14 @@ def handle_drive_webhook():
         # Webhook verification - Google sends a challenge
         challenge = request.args.get('challenge')
         if challenge:
-            logger.info("Webhook verification challenge received")
+            logger.info(f"✅ Webhook verification challenge received: {challenge[:20]}...")
             return challenge, 200
-        return "OK", 200
+        # Health check endpoint
+        return jsonify({
+            "status": "ok",
+            "service": "google_drive_webhook",
+            "timestamp": datetime.now().isoformat()
+        }), 200
 
     if request.method == 'POST':
         # Handle change notification
@@ -64,19 +69,19 @@ def handle_drive_webhook():
             # Handle different resource states
             if resource_state == 'sync':
                 # Initial sync - just acknowledge
-                logger.info("Webhook sync notification received")
+                logger.info(f"✅ Webhook sync notification received (channel: {channel_id[:16] if channel_id else 'unknown'}...)")
                 return "OK", 200
 
             elif resource_state == 'update' or resource_state == 'change':
                 # File changed - trigger sync
-                logger.info("File change detected, triggering sync...")
+                logger.info(f"📥 File change detected via webhook (channel: {channel_id[:16] if channel_id else 'unknown'}...), triggering sync...")
                 
                 # Process changes asynchronously (don't block webhook response)
                 if bot_instance and drive_sync_instance:
                     # Schedule sync in background
                     import threading
                     thread = threading.Thread(
-                        target=process_drive_changes,
+                        target=process_drive_changes_with_notification,
                         args=(channel_id,)
                     )
                     thread.daemon = True
@@ -98,6 +103,55 @@ def handle_drive_webhook():
             return "Error", 500
 
     return "Method not allowed", 405
+
+
+def notify_admins(message):
+    """Send notification to superadmins"""
+    if bot_instance:
+        try:
+            from config import SUPER_ADMIN_IDS
+            import asyncio
+            
+            async def send_notifications():
+                for admin_id in SUPER_ADMIN_IDS[:1]:  # Notify first admin only
+                    try:
+                        await bot_instance.app.bot.send_message(
+                            admin_id,
+                            message,
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not send notification to {admin_id}: {e}")
+            
+            # Try to get existing event loop or create new one
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, schedule the coroutine
+                    asyncio.create_task(send_notifications())
+                else:
+                    loop.run_until_complete(send_notifications())
+            except RuntimeError:
+                # No event loop, create one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(send_notifications())
+                loop.close()
+        except Exception as e:
+            logger.debug(f"Error in notify_admins: {e}")
+
+
+def process_drive_changes_with_notification(channel_id):
+    """Process drive changes and send notifications"""
+    # Send initial notification
+    notify_admins(
+        "🔄 *Webhook Activity*\n\n"
+        "Google Drive change detected!\n"
+        "Syncing files automatically..."
+    )
+    
+    # Process changes
+    process_drive_changes(channel_id)
 
 
 def process_drive_changes(channel_id):
@@ -278,7 +332,15 @@ def sync_changed_files(files, folder, sync_user_id):
             synced_by=sync_user_id
         )
 
-        logger.info(f"Webhook sync complete: {total_processed}/{len(files)} files processed")
+        logger.info(f"✅ Webhook sync complete: {total_processed}/{len(files)} files processed")
+        
+        # Notify admins of successful sync
+        notify_admins(
+            f"✅ *Auto-Sync Complete*\n\n"
+            f"*Files processed:* {total_processed}/{len(files)}\n"
+            f"*Folder:* {folder['folder_name']}\n"
+            f"*Time:* {datetime.now().strftime('%H:%M:%S')}"
+        )
 
     except Exception as e:
         logger.error(f"Error in sync_changed_files: {e}", exc_info=True)

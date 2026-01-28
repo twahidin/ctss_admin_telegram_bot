@@ -164,13 +164,55 @@ class DriveSync:
             logger.error(f"Error exporting Google file {file_id}: {error}")
             return None
 
+    def resolve_shortcut(self, file_id: str) -> Optional[Dict]:
+        """
+        Resolve a Google Drive shortcut to its target file
+        Returns the target file info or None
+        """
+        try:
+            file_metadata = self.service.files().get(
+                fileId=file_id,
+                fields='id, name, mimeType, shortcutDetails'
+            ).execute()
+            
+            # Check if it's a shortcut
+            if file_metadata.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                shortcut_details = file_metadata.get('shortcutDetails', {})
+                target_id = shortcut_details.get('targetId')
+                
+                if target_id:
+                    # Get target file metadata
+                    target_file = self.service.files().get(
+                        fileId=target_id,
+                        fields='id, name, mimeType'
+                    ).execute()
+                    logger.info(f"Resolved shortcut {file_metadata.get('name')} to target: {target_file.get('name')}")
+                    return target_file
+            
+            return None
+        except HttpError as error:
+            logger.error(f"Error resolving shortcut {file_id}: {error}")
+            return None
+
     def get_file_content(self, file: Dict) -> Optional[bytes]:
         """
         Get file content, handling both regular files and Google Docs/Sheets
+        Also handles shortcuts by resolving them to their target files
         Returns bytes of file content
         """
         file_id = file['id']
         mime_type = file.get('mimeType', '')
+        
+        # Check if it's a shortcut - resolve to target file
+        if mime_type == 'application/vnd.google-apps.shortcut':
+            logger.info(f"Detected shortcut: {file.get('name')}, resolving to target file...")
+            target_file = self.resolve_shortcut(file_id)
+            if target_file:
+                # Recursively get content of target file
+                return self.get_file_content(target_file)
+            else:
+                logger.warning(f"Could not resolve shortcut {file.get('name')}")
+                return None
 
         # Check if it's a Google Workspace file
         if mime_type == 'application/vnd.google-apps.spreadsheet':

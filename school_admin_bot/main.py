@@ -1427,46 +1427,59 @@ Text to parse:
 
     async def list_folders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all folders and their role access"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        
-        if not user or user["role"] not in ["admin", "superadmin"]:
-            await update.message.reply_text("❌ This command is for admins only.")
-            return
-        
-        if not self.drive_sync:
-            await update.message.reply_text("❌ Google Drive is not configured.")
-            return
-        
-        # Get folders from Drive
-        drive_folders = self.drive_sync.list_folders()
-        db_folders = db.get_all_folders()
-        
-        if not drive_folders:
-            await update.message.reply_text("📁 No folders found in Google Drive.")
-            return
-        
-        message = "📁 *Google Drive Folders:*\n\n"
-        
-        for folder in drive_folders:
-            folder_name = folder['name']
-            # Check if configured in database
-            db_folder = db.get_folder_by_drive_id(folder['id'])
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
             
-            if db_folder:
-                folder_with_roles = db.get_folder_with_roles(db_folder['id'])
-                roles = folder_with_roles.get('roles', [])
-                if roles:
-                    message += f"✅ *{folder_name}*\n"
-                    message += f"   └ Roles: {', '.join(roles)}\n\n"
+            if not user or user["role"] not in ["admin", "superadmin"]:
+                await update.message.reply_text("❌ This command is for admins only.")
+                return
+            
+            if not self.drive_sync:
+                await update.message.reply_text("❌ Google Drive is not configured.")
+                return
+            
+            # Get folders from Drive
+            drive_folders = self.drive_sync.list_folders()
+            db_folders = db.get_all_folders()
+            
+            if not drive_folders:
+                await update.message.reply_text("📁 No folders found in Google Drive.")
+                return
+            
+            # Use HTML parse mode to avoid Markdown parsing issues
+            message = "📁 <b>Google Drive Folders:</b>\n\n"
+            
+            for folder in drive_folders:
+                folder_name = folder['name']
+                # Escape HTML special characters in folder name
+                folder_name_escaped = folder_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                
+                # Check if configured in database
+                db_folder = db.get_folder_by_drive_id(folder['id'])
+                
+                if db_folder:
+                    folder_with_roles = db.get_folder_with_roles(db_folder['id'])
+                    roles = folder_with_roles.get('roles', [])
+                    if roles:
+                        message += f"✅ <b>{folder_name_escaped}</b>\n"
+                        message += f"   └ Roles: {', '.join(roles)}\n\n"
+                    else:
+                        message += f"⚠️ <b>{folder_name_escaped}</b>\n"
+                        message += f"   └ No roles configured\n\n"
                 else:
-                    message += f"⚠️ *{folder_name}*\n"
-                    message += f"   └ No roles configured\n\n"
-            else:
-                message += f"❌ *{folder_name}*\n"
-                message += f"   └ Not configured (use /setfolder)\n\n"
-        
-        await update.message.reply_text(message, parse_mode="Markdown")
+                    message += f"❌ <b>{folder_name_escaped}</b>\n"
+                    message += f"   └ Not configured (use /setfolder)\n\n"
+            
+            await update.message.reply_text(message, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error in list_folders command: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ Error listing folders: {str(e)[:200]}\n\n"
+                f"Please check:\n"
+                f"• Database connection\n"
+                f"• Google Drive API access"
+            )
 
     async def sync_drive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Sync files from Google Drive (role-based)"""

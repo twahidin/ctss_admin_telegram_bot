@@ -3432,7 +3432,41 @@ Provide a summary of the main points:"""
                 logger.warning(f"Failed to start webhook server: {e}")
 
         # Start polling (this blocks, but Flask runs in background thread)
-        self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Add error handling for network issues
+        import time
+        max_retries = 3
+        retry_delay = 10
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting Telegram bot polling (attempt {attempt + 1}/{max_retries})...")
+                self.app.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,  # Drop pending updates on restart
+                    close_loop=False  # Don't close event loop on error
+                )
+                # If we get here, polling stopped normally
+                break
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Error in polling (attempt {attempt + 1}/{max_retries}): {error_msg}", exc_info=True)
+                
+                # Check for specific error types
+                if "Connection" in error_msg or "Network" in error_msg or "timeout" in error_msg.lower():
+                    logger.warning("Network-related error detected. This might be temporary.")
+                elif "Unauthorized" in error_msg or "401" in error_msg:
+                    logger.error("Bot token is invalid or expired. Check TELEGRAM_TOKEN environment variable.")
+                    raise  # Don't retry for auth errors
+                elif "Too Many Requests" in error_msg or "429" in error_msg:
+                    logger.warning("Rate limited by Telegram API. Waiting longer before retry...")
+                    retry_delay = 60  # Wait 60 seconds for rate limits
+                
+                if attempt < max_retries - 1:
+                    logger.info(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("Max retries reached. Bot polling failed.")
+                    raise
 
 
 if __name__ == "__main__":

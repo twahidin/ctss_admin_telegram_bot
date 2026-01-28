@@ -1407,12 +1407,13 @@ Text to parse:
             # Set role access
             db.set_folder_role_access(folder_id, roles)
             
+            # Use HTML parse mode to avoid Markdown parsing issues with underscores and special chars
             await update.message.reply_text(
-                f"✅ *Folder configured!*\n\n"
-                f"*Folder:* {folder['name']}\n"
-                f"*Accessible to:* {', '.join(roles)}\n\n"
+                f"✅ <b>Folder configured!</b>\n\n"
+                f"<b>Folder:</b> {folder['name']}\n"
+                f"<b>Accessible to:</b> {', '.join(roles)}\n\n"
                 f"Use /sync to sync files from this folder.",
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"Error in set_folder command: {e}", exc_info=True)

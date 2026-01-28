@@ -1,5 +1,6 @@
 import json
 import io
+import uuid
 import logging
 from typing import List, Dict, Optional
 from google.oauth2 import service_account
@@ -31,7 +32,10 @@ class DriveSync:
         # Create credentials
         credentials = service_account.Credentials.from_service_account_info(
             service_account_info,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=[
+                'https://www.googleapis.com/auth/drive.readonly',
+                'https://www.googleapis.com/auth/drive.metadata.readonly'
+            ]
         )
 
         # Build Drive API service
@@ -221,3 +225,78 @@ class DriveSync:
 
         # Default
         return 'GENERAL'
+
+    def register_webhook(self, webhook_url: str, folder_id: str = None) -> Optional[Dict]:
+        """
+        Register a webhook to watch for changes in a folder
+        Returns the webhook channel info
+        """
+        if not folder_id:
+            folder_id = self.root_folder_id
+
+        try:
+            # Generate a unique channel ID
+            import uuid
+            channel_id = str(uuid.uuid4())
+            
+            # Register the webhook/watch
+            request = self.service.files().watch(
+                fileId=folder_id,
+                body={
+                    'id': channel_id,
+                    'type': 'web_hook',
+                    'address': webhook_url,
+                }
+            )
+            
+            result = request.execute()
+            logger.info(f"Registered webhook for folder {folder_id}: {result.get('id')}")
+            return result
+
+        except HttpError as error:
+            logger.error(f"Error registering webhook: {error}")
+            return None
+
+    def stop_webhook(self, channel_id: str, resource_id: str):
+        """Stop a webhook channel"""
+        try:
+            self.service.channels().stop(
+                body={
+                    'id': channel_id,
+                    'resourceId': resource_id
+                }
+            ).execute()
+            logger.info(f"Stopped webhook channel {channel_id}")
+        except HttpError as error:
+            logger.error(f"Error stopping webhook: {error}")
+
+    def get_changes(self, start_page_token: str = None) -> Dict:
+        """
+        Get list of changes since last sync
+        Returns changes and new page token
+        """
+        try:
+            if not start_page_token:
+                # Get initial page token
+                result = self.service.changes().getStartPageToken().execute()
+                start_page_token = result.get('startPageToken')
+                return {'changes': [], 'newStartPageToken': start_page_token}
+
+            # Get changes
+            result = self.service.changes().list(
+                pageToken=start_page_token,
+                fields='nextPageToken,newStartPageToken,changes(fileId,file(name,mimeType,parents))',
+                pageSize=100
+            ).execute()
+
+            changes = result.get('changes', [])
+            new_token = result.get('newStartPageToken')
+
+            return {
+                'changes': changes,
+                'newStartPageToken': new_token
+            }
+
+        except HttpError as error:
+            logger.error(f"Error getting changes: {error}")
+            return {'changes': [], 'newStartPageToken': start_page_token}

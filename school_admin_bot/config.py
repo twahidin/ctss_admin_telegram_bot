@@ -72,6 +72,10 @@ GOOGLE_DRIVE_ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 DRIVE_SYNC_HOUR = int(os.getenv("DRIVE_SYNC_HOUR", "6"))  # Default 6 AM
 
+# Webhook Configuration
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")  # Public URL for webhook endpoint (e.g., https://your-bot.railway.app/webhook/drive)
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # Secret token for webhook verification
+
 # Validate required environment variables
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN environment variable is required")

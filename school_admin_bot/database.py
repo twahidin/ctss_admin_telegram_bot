@@ -188,6 +188,23 @@ class Database:
         """
         )
 
+        # Webhook channels and page tokens
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS drive_webhooks (
+                id SERIAL PRIMARY KEY,
+                folder_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL UNIQUE,
+                resource_id TEXT,
+                webhook_url TEXT NOT NULL,
+                page_token TEXT,
+                active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP
+            )
+        """
+        )
+
         # Create indexes
         cursor.execute(
             """
@@ -1097,6 +1114,108 @@ class Database:
         conn.close()
 
         return [dict(l) for l in logs]
+
+    # ===== WEBHOOK MANAGEMENT =====
+
+    def save_webhook(self, folder_id, channel_id, resource_id, webhook_url, page_token=None, expires_at=None):
+        """Save webhook channel information"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO drive_webhooks 
+            (folder_id, channel_id, resource_id, webhook_url, page_token, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (channel_id) 
+            DO UPDATE SET resource_id = EXCLUDED.resource_id, 
+                         page_token = EXCLUDED.page_token,
+                         expires_at = EXCLUDED.expires_at,
+                         active = TRUE
+            RETURNING id
+        """,
+            (folder_id, channel_id, resource_id, webhook_url, page_token, expires_at),
+        )
+
+        webhook_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return webhook_id
+
+    def get_webhook_by_folder(self, folder_id):
+        """Get active webhook for a folder"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, folder_id, channel_id, resource_id, webhook_url, page_token, expires_at
+            FROM drive_webhooks 
+            WHERE folder_id = %s AND active = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+        """,
+            (folder_id,),
+        )
+
+        webhook = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(webhook) if webhook else None
+
+    def update_webhook_page_token(self, channel_id, page_token):
+        """Update the page token for a webhook"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE drive_webhooks SET page_token = %s WHERE channel_id = %s
+        """,
+            (page_token, channel_id),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def deactivate_webhook(self, channel_id):
+        """Deactivate a webhook"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE drive_webhooks SET active = FALSE WHERE channel_id = %s
+        """,
+            (channel_id,),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+    def get_all_active_webhooks(self):
+        """Get all active webhooks"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT id, folder_id, channel_id, resource_id, webhook_url, page_token, expires_at
+            FROM drive_webhooks 
+            WHERE active = TRUE
+        """
+        )
+
+        webhooks = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(w) for w in webhooks]
 
     # ===== STATISTICS =====
 

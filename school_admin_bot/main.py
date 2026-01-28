@@ -578,7 +578,9 @@ Text to parse:
         help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
         help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n"
         help_text += "  └ Available roles: viewer, relief\\_member, admin, superadmin\n"
-        help_text += "/listfolders - View all folders and their access configuration\n\n"
+        help_text += "/listfolders - View all folders and their access configuration\n"
+        help_text += "/registerwebhook - Register webhook for auto\\-sync on file changes\n"
+        help_text += "  └ Requires WEBHOOK_URL environment variable\n\n"
         help_text += "*System Management:*\n"
         help_text += "/stats - Show bot usage statistics\n"
         help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
@@ -1581,7 +1583,94 @@ Text to parse:
             if len(folders) > 10:
                 message += f"... and {len(folders) - 10} more\n"
         
+        # Check webhook status
+        from config import WEBHOOK_URL
+        if WEBHOOK_URL:
+            webhooks = db.get_all_active_webhooks()
+            message += f"\n*Webhooks:* {len(webhooks)} active\n"
+            if webhooks:
+                for w in webhooks[:3]:
+                    message += f"• Channel: {w['channel_id'][:8]}...\n"
+        else:
+            message += "\n*Webhooks:* Not configured\n"
+            message += "Use /registerwebhook to enable auto-sync"
+        
         await update.message.reply_text(message, parse_mode="Markdown")
+
+    async def register_webhook(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Register webhook for auto-sync (superadmin only)"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+        
+        if user_id not in SUPER_ADMIN_IDS:
+            await update.message.reply_text("❌ This command is for protected super admins only.")
+            return
+        
+        if not self.drive_sync:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+        
+        from config import WEBHOOK_URL
+        
+        if not WEBHOOK_URL:
+            await update.message.reply_text(
+                "❌ *Webhook URL not configured.*\n\n"
+                "Please set `WEBHOOK_URL` environment variable in Railway.\n"
+                "Format: `https://your-bot.railway.app/webhook/drive`\n\n"
+                "After setting, restart the bot and try again.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        await update.message.reply_text("🔄 Registering webhook for auto-sync...")
+        
+        try:
+            # Register webhook for root folder
+            result = self.drive_sync.register_webhook(WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID)
+            
+            if result:
+                channel_id = result.get('id')
+                resource_id = result.get('resourceId')
+                expiration = result.get('expiration')
+                
+                # Get initial page token
+                changes_result = self.drive_sync.get_changes()
+                page_token = changes_result.get('newStartPageToken')
+                
+                # Save to database
+                from datetime import datetime
+                expires_at = None
+                if expiration:
+                    expires_at = datetime.fromtimestamp(int(expiration) / 1000)
+                
+                db.save_webhook(
+                    folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID,
+                    channel_id=channel_id,
+                    resource_id=resource_id,
+                    webhook_url=WEBHOOK_URL,
+                    page_token=page_token,
+                    expires_at=expires_at
+                )
+                
+                await update.message.reply_text(
+                    f"✅ *Webhook Registered!*\n\n"
+                    f"*Channel ID:* `{channel_id}`\n"
+                    f"*Status:* Active\n"
+                    f"*Auto-sync:* Enabled\n\n"
+                    f"Files will now sync automatically when changed in Google Drive.\n"
+                    f"Webhook expires: {expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'Never'}",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Failed to register webhook. Check logs for details."
+                )
+                
+        except Exception as e:
+            logger.error(f"Error registering webhook: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ Error registering webhook: {str(e)}"
+            )
 
     async def sync_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show sync status for today"""
@@ -2663,6 +2752,7 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("sync", self.sync_drive))
         self.app.add_handler(CommandHandler("drivefolder", self.drive_folder_info))
         self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
+        self.app.add_handler(CommandHandler("registerwebhook", self.register_webhook))
         # Hidden super admin commands
         self.app.add_handler(CommandHandler("addsuperadmin", self.add_superadmin))
         self.app.add_handler(CommandHandler("removesuperadmin", self.remove_superadmin))
@@ -2732,6 +2822,27 @@ Provide a summary of the main points:"""
             logger.info(f"Morning Drive sync scheduled for {DRIVE_SYNC_HOUR}:00")
 
         logger.info("Bot started successfully!")
+
+        # Start webhook server in background thread if configured
+        from config import WEBHOOK_URL
+        if WEBHOOK_URL:
+            try:
+                from webhook_handler import webhook_app, set_bot_instance, set_analysis_functions
+                import threading
+                
+                # Set bot instance for webhook handler
+                set_bot_instance(self, self.drive_sync)
+                set_analysis_functions(self.analyze_image, self.analyze_pdf)
+                
+                # Start Flask server in background thread
+                def run_webhook_server():
+                    webhook_app.run(host='0.0.0.0', port=int(os.getenv('PORT', '5000')), debug=False, use_reloader=False)
+                
+                webhook_thread = threading.Thread(target=run_webhook_server, daemon=True)
+                webhook_thread.start()
+                logger.info(f"Webhook server started on port {os.getenv('PORT', '5000')}")
+            except Exception as e:
+                logger.warning(f"Failed to start webhook server: {e}")
 
         # Start polling
         self.app.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -398,30 +398,62 @@ class DriveSync:
         except HttpError as error:
             logger.error(f"Error stopping webhook: {error}")
 
-    def get_changes(self, start_page_token: str = None) -> Dict:
+    def get_folder_drive_id(self, folder_id: str) -> Optional[str]:
         """
-        Get list of changes since last sync
-        Returns changes and new page token
+        Get the drive ID for a folder (shared drive ID if folder is in a shared drive).
+        Returns None for My Drive.
+        """
+        try:
+            result = self.service.files().get(
+                fileId=folder_id,
+                fields='driveId',
+                supportsAllDrives=True
+            ).execute()
+            return result.get('driveId')
+        except HttpError as error:
+            logger.debug(f"Could not get driveId for folder {folder_id}: {error}")
+            return None
+
+    def get_changes(self, start_page_token: str = None, drive_id: str = None) -> Dict:
+        """
+        Get list of changes since last sync.
+        If folder is in a shared drive, pass drive_id so we use that drive's changelog.
+        Returns changes and new page token.
         """
         try:
             if not start_page_token:
-                # Get initial page token
-                result = self.service.changes().getStartPageToken().execute()
+                # Get initial page token for this drive (or My Drive if no drive_id)
+                get_token_kwargs = {'supportsAllDrives': True}
+                if drive_id:
+                    get_token_kwargs['driveId'] = drive_id
+                result = self.service.changes().getStartPageToken(**get_token_kwargs).execute()
                 start_page_token = result.get('startPageToken')
                 return {'changes': [], 'newStartPageToken': start_page_token}
 
-            # Get changes
-            result = self.service.changes().list(
-                pageToken=start_page_token,
-                fields='nextPageToken,newStartPageToken,changes(fileId,file(name,mimeType,parents))',
-                pageSize=100
-            ).execute()
+            # Get changes (support shared drives so we see changes to files in shared drive folders)
+            list_kwargs = {
+                'pageToken': start_page_token,
+                'fields': 'nextPageToken,newStartPageToken,changes(fileId,file(name,mimeType,parents))',
+                'pageSize': 100,
+                'supportsAllDrives': True,
+                'includeItemsFromAllDrives': True,
+            }
+            if drive_id:
+                list_kwargs['driveId'] = drive_id
 
-            changes = result.get('changes', [])
-            new_token = result.get('newStartPageToken')
+            all_changes = []
+            new_token = None
+            while True:
+                result = self.service.changes().list(**list_kwargs).execute()
+                all_changes.extend(result.get('changes', []))
+                new_token = result.get('newStartPageToken')
+                next_token = result.get('nextPageToken')
+                if not next_token:
+                    break
+                list_kwargs['pageToken'] = next_token
 
             return {
-                'changes': changes,
+                'changes': all_changes,
                 'newStartPageToken': new_token
             }
 

@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import random
 import string
 from datetime import datetime, date
@@ -71,12 +72,16 @@ class Database:
         try:
             cursor.execute(
                 """
-                ALTER TABLE daily_entries 
-                ADD COLUMN IF NOT EXISTS drive_file_id TEXT
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'daily_entries' AND column_name = 'drive_file_id'
                 """
             )
-        except Exception:
-            pass
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE daily_entries ADD COLUMN drive_file_id TEXT")
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning("Migration: could not add drive_file_id to daily_entries: %s", e)
+            conn.rollback()
 
         # Create index on date for fast queries
         cursor.execute(
@@ -85,14 +90,17 @@ class Database:
             ON daily_entries(date)
         """
         )
-        # Index for upsert: find today's entry by drive_file_id
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_daily_entries_date_drive_file_id 
-            ON daily_entries(date, drive_file_id) 
-            WHERE drive_file_id IS NOT NULL
-        """
-        )
+        # Index for upsert: find today's entry by drive_file_id (only if column exists)
+        try:
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_daily_entries_date_drive_file_id 
+                ON daily_entries(date, drive_file_id) 
+                WHERE drive_file_id IS NOT NULL
+                """
+            )
+        except Exception:
+            pass
 
         # Daily codes table
         cursor.execute(

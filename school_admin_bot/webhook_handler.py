@@ -182,7 +182,9 @@ def process_drive_changes(channel_id):
             logger.error("Drive sync instance not available")
             return
 
-        changes_result = drive_sync_instance.get_changes(page_token)
+        # Use folder's drive ID if in a shared drive, so we get that drive's changelog
+        drive_id = drive_sync_instance.get_folder_drive_id(folder_id)
+        changes_result = drive_sync_instance.get_changes(page_token, drive_id=drive_id)
         changes = changes_result.get('changes', [])
         new_page_token = changes_result.get('newStartPageToken')
 

@@ -1766,7 +1766,9 @@ Text to parse:
         
         try:
             from datetime import datetime
-            changes_result = self.drive_sync.get_changes()
+            # Use root folder's drive ID if in a shared drive, so we get the correct changelog
+            root_drive_id = self.drive_sync.get_folder_drive_id(GOOGLE_DRIVE_ROOT_FOLDER_ID)
+            changes_result = self.drive_sync.get_changes(None, drive_id=root_drive_id)
             page_token = changes_result.get('newStartPageToken')
             registered_count = 0
             failed_folders = []
@@ -2153,8 +2155,9 @@ Text to parse:
                             resource_id = result.get('resourceId')
                             expiration = result.get('expiration')
                             
-                            # Get page token
-                            changes_result = self.drive_sync.get_changes()
+                            # Get page token for this folder's drive (shared drive or My Drive)
+                            renew_drive_id = self.drive_sync.get_folder_drive_id(webhook['folder_id'])
+                            changes_result = self.drive_sync.get_changes(None, drive_id=renew_drive_id)
                             page_token = changes_result.get('newStartPageToken')
                             
                             expires_at_new = None

@@ -1684,25 +1684,13 @@ Provide a direct, concise answer. If the information isn't available, say so cle
     def _filter_entries_by_folder_access(self, entries, user_role):
         """
         Filter entries based on folder access rules:
-        - All folders: relief_member, admin, superadmin only
-        - Entries without folder (uploaded via Telegram): accessible to all
+        - All synced data is viewable by everyone (viewers can query/view)
+        - Only relief_member/admin/superadmin can SYNC folders
+        - All entries are accessible for viewing/querying
         """
-        filtered = []
-        
-        for entry in entries:
-            content_data = entry.get("content", {})
-            folder = content_data.get("folder", "")
-            
-            # If entry has a folder (from Google Drive), check access
-            if folder:
-                # All folders: relief_member, admin, superadmin only
-                if user_role in ["relief_member", "admin", "superadmin"]:
-                    filtered.append(entry)
-            else:
-                # Entries uploaded via Telegram (no folder field): accessible to all
-                filtered.append(entry)
-        
-        return filtered
+        # All entries are accessible for viewing - no filtering needed
+        # The restriction is only on SYNCING folders, not viewing synced data
+        return entries
 
     def _build_context_for_claude(self, entries, query):
         """Build context string from entries, filtering by relevance"""

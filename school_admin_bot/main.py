@@ -1642,6 +1642,27 @@ Text to parse:
             )
             return
         
+        # Check if webhook already exists
+        existing_webhook = db.get_webhook_by_folder(GOOGLE_DRIVE_ROOT_FOLDER_ID)
+        if existing_webhook:
+            from datetime import datetime
+            expires_at = existing_webhook.get('expires_at')
+            if expires_at:
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+                time_remaining = (expires_at - datetime.now()).total_seconds() / 3600
+                if time_remaining > 0:
+                    await update.message.reply_text(
+                        f"ℹ️ *Webhook Already Registered*\n\n"
+                        f"*Channel ID:* `{existing_webhook['channel_id'][:16]}...`\n"
+                        f"*Status:* Active\n"
+                        f"*Expires in:* {int(time_remaining/24)} days\n\n"
+                        f"Use `/webhookstatus` to check details.\n"
+                        f"To re-register, the current webhook must expire first.",
+                        parse_mode="Markdown"
+                    )
+                    return
+        
         await update.message.reply_text("🔄 Registering webhook for auto-sync...")
         
         try:

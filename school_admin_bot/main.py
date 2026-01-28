@@ -457,30 +457,32 @@ Text to parse:
                 help_text += "Use /help to see commands available to your role."
                 await update.message.reply_text(help_text, parse_mode="Markdown")
                 return
+
+            help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
+            help_text += "*Relief Reminders:*\n"
+            help_text += "/reliefstatus - View all relief reminders for today\n"
+            help_text += "  └ Shows active reminders and their status\n"
+            help_text += "/cancelrelief - Cancel all relief reminders for today\n"
+            help_text += "  └ Use this if relief assignments are cancelled\n\n"
+            
+            help_text += "*Google Drive Access:*\n"
+            help_text += "/sync - Sync files from Google Drive folders\n"
+            help_text += "  └ Downloads and processes files from accessible folders\n"
+            help_text += "/syncstatus - View sync history for today\n\n"
+            
+            help_text += "*General Commands:*\n"
+            help_text += "/help - View general help commands\n"
+            
+            if user["role"] in ["admin", "superadmin"]:
+                help_text += "/helpadmin - View admin management commands\n"
+
+            await update.message.reply_text(help_text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in helprelief: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-            return
-
-        help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
-        help_text += "*Relief Reminders:*\n"
-        help_text += "/reliefstatus - View all relief reminders for today\n"
-        help_text += "  └ Shows active reminders and their status\n"
-        help_text += "/cancelrelief - Cancel all relief reminders for today\n"
-        help_text += "  └ Use this if relief assignments are cancelled\n\n"
-        
-        help_text += "*Google Drive Access:*\n"
-        help_text += "/sync - Sync files from Google Drive folders\n"
-        help_text += "  └ Downloads and processes files from accessible folders\n"
-        help_text += "/syncstatus - View sync history for today\n\n"
-        
-        help_text += "*General Commands:*\n"
-        help_text += "/help - View general help commands\n"
-        
-        if user["role"] in ["admin", "superadmin"]:
-            help_text += "/helpadmin - View admin management commands\n"
-
-        await update.message.reply_text(help_text, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+            except:
+                pass
 
     async def helpadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show admin help - for admins and superadmins"""
@@ -506,49 +508,51 @@ Text to parse:
                 help_text += "Use /help to see commands available to your role."
                 await update.message.reply_text(help_text, parse_mode="Markdown")
                 return
+
+            help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
+            
+            help_text += "*File Upload:*\n"
+            help_text += "/upload - Upload new information or remove existing uploads\n"
+            help_text += "  └ Supports photos, PDFs, and text\n"
+            help_text += "/myuploads - View your uploads for today\n\n"
+            
+            help_text += "*User Management:*\n"
+            help_text += "/add [user_id] [name] - Add a new user to the system\n"
+            help_text += "  └ Example: /add 123456789 John Teacher\n"
+            help_text += "/remove [user_id] - Remove a user from the system\n"
+            help_text += "/promote [user_id] [role] - Change a user's role\n"
+            help_text += "  └ Roles: viewer, relief_member, admin\n"
+            help_text += "  └ Example: /promote 123456789 relief_member\n"
+            help_text += "/list - Show all registered users and their roles\n\n"
+            
+            help_text += "*Google Drive Management:*\n"
+            help_text += "/sync - Sync files from accessible Google Drive folders\n"
+            help_text += "/listfolders - View all folders and their access configuration\n"
+            help_text += "/drivefolder - View connected Google Drive folder information\n"
+            help_text += "/syncstatus - View sync history and status\n"
+            
+            if user["role"] == "superadmin":
+                help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
+                help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
+            
+            help_text += "*Relief Management:*\n"
+            help_text += "/reliefstatus - View today's relief reminders\n"
+            help_text += "/cancelrelief - Cancel all relief reminders\n\n"
+            
+            help_text += "*Other Commands:*\n"
+            help_text += "/help - View general help commands\n"
+            help_text += "/helprelief - View relief management commands\n"
+            
+            if user["role"] == "superadmin":
+                help_text += "/helpsuper - View super admin commands\n"
+
+            await update.message.reply_text(help_text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in helpadmin: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-            return
-
-        help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
-        
-        help_text += "*File Upload:*\n"
-        help_text += "/upload - Upload new information or remove existing uploads\n"
-        help_text += "  └ Supports photos, PDFs, and text\n"
-        help_text += "/myuploads - View your uploads for today\n\n"
-        
-        help_text += "*User Management:*\n"
-        help_text += "/add [user_id] [name] - Add a new user to the system\n"
-        help_text += "  └ Example: /add 123456789 John Teacher\n"
-        help_text += "/remove [user_id] - Remove a user from the system\n"
-        help_text += "/promote [user_id] [role] - Change a user's role\n"
-        help_text += "  └ Roles: viewer, relief_member, admin\n"
-        help_text += "  └ Example: /promote 123456789 relief_member\n"
-        help_text += "/list - Show all registered users and their roles\n\n"
-        
-        help_text += "*Google Drive Management:*\n"
-        help_text += "/sync - Sync files from accessible Google Drive folders\n"
-        help_text += "/listfolders - View all folders and their access configuration\n"
-        help_text += "/drivefolder - View connected Google Drive folder information\n"
-        help_text += "/syncstatus - View sync history and status\n"
-        
-        if user["role"] == "superadmin":
-            help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
-            help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n\n"
-        
-        help_text += "*Relief Management:*\n"
-        help_text += "/reliefstatus - View today's relief reminders\n"
-        help_text += "/cancelrelief - Cancel all relief reminders\n\n"
-        
-        help_text += "*Other Commands:*\n"
-        help_text += "/help - View general help commands\n"
-        help_text += "/helprelief - View relief management commands\n"
-        
-        if user["role"] == "superadmin":
-            help_text += "/helpsuper - View super admin commands\n"
-
-        await update.message.reply_text(help_text, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+            except:
+                pass
 
     async def helpsuper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show super admin help"""
@@ -575,38 +579,40 @@ Text to parse:
                 help_text += "Use /help to see commands available to your role."
                 await update.message.reply_text(help_text, parse_mode="Markdown")
                 return
+
+            help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
+            help_text += "*User Management:*\n"
+            help_text += "/massupload - Upload CSV file to replace all users\n"
+            help_text += "  └ CSV format: telegram\\_id,name,role\n"
+            help_text += "  └ Roles: viewer, relief\\_member, admin\n"
+            help_text += "  └ ⚠️ This replaces all users except protected super admins\n"
+            help_text += "/addsuperadmin [user_id] - Add a new super admin\n"
+            help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
+            help_text += "/listsuperadmins - List all super admins\n\n"
+            help_text += "*Google Drive Configuration:*\n"
+            help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
+            help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n"
+            help_text += "  └ Available roles: viewer, relief\\_member, admin, superadmin\n"
+            help_text += "/listfolders - View all folders and their access configuration\n"
+            help_text += "/registerwebhook - Register webhook for auto\\-sync on file changes\n"
+            help_text += "  └ Requires WEBHOOK_URL environment variable\n"
+            help_text += "/webhookstatus - Check webhook status and health\n\n"
+            help_text += "*System Management:*\n"
+            help_text += "/stats - Show bot usage statistics\n"
+            help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
+            help_text += "*Other Commands:*\n"
+            help_text += "/help - View general help commands\n"
+            help_text += "/helprelief - View relief management commands\n"
+            help_text += "/helpadmin - View admin management commands\n\n"
+            help_text += f"⚠️ Your account (ID: {user_id}) is protected and cannot be removed."
+
+            await update.message.reply_text(help_text, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in helpsuper: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-            return
-
-        help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
-        help_text += "*User Management:*\n"
-        help_text += "/massupload - Upload CSV file to replace all users\n"
-        help_text += "  └ CSV format: telegram\\_id,name,role\n"
-        help_text += "  └ Roles: viewer, relief\\_member, admin\n"
-        help_text += "  └ ⚠️ This replaces all users except protected super admins\n"
-        help_text += "/addsuperadmin [user_id] - Add a new super admin\n"
-        help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
-        help_text += "/listsuperadmins - List all super admins\n\n"
-        help_text += "*Google Drive Configuration:*\n"
-        help_text += "/setfolder \"Folder Name\" roles - Configure folder access\n"
-        help_text += "  └ Example: /setfolder \"Relief Timetable\" admin,relief_member\n"
-        help_text += "  └ Available roles: viewer, relief\\_member, admin, superadmin\n"
-        help_text += "/listfolders - View all folders and their access configuration\n"
-        help_text += "/registerwebhook - Register webhook for auto\\-sync on file changes\n"
-        help_text += "  └ Requires WEBHOOK_URL environment variable\n"
-        help_text += "/webhookstatus - Check webhook status and health\n\n"
-        help_text += "*System Management:*\n"
-        help_text += "/stats - Show bot usage statistics\n"
-        help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
-        help_text += "*Other Commands:*\n"
-        help_text += "/help - View general help commands\n"
-        help_text += "/helprelief - View relief management commands\n"
-        help_text += "/helpadmin - View admin management commands\n\n"
-        help_text += "⚠️ Your account (ID: {}) is protected and cannot be removed.".format(user_id)
-
-        await update.message.reply_text(help_text, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+            except:
+                pass
 
     async def upload_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start upload process - show initial menu"""

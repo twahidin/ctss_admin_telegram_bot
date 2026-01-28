@@ -2037,13 +2037,52 @@ Provide a direct, concise answer. If the information isn't available, say so cle
     def _filter_entries_by_folder_access(self, entries, user_role):
         """
         Filter entries based on folder access rules:
-        - All synced data is viewable by everyone (viewers can query/view)
-        - Only relief_member/admin/superadmin can SYNC folders
-        - All entries are accessible for viewing/querying
+        - Each entry has a drive_folder_id in content_data
+        - Check if user's role has access to that folder
+        - Superadmins have access to all folders
         """
-        # All entries are accessible for viewing - no filtering needed
-        # The restriction is only on SYNCING folders, not viewing synced data
-        return entries
+        if not entries:
+            return entries
+        
+        # Superadmins can access everything
+        from config import SUPER_ADMIN_IDS
+        # Note: user_role is a string, SUPER_ADMIN_IDS is a list of ints (telegram IDs)
+        # We check superadmin role, not ID here
+        if user_role == 'superadmin':
+            return entries
+        
+        filtered_entries = []
+        
+        for entry in entries:
+            content = entry.get('content', {})
+            drive_folder_id = content.get('drive_folder_id')
+            
+            if not drive_folder_id:
+                # Entry doesn't have folder info (e.g., manual upload)
+                # Allow access for now, or you can restrict if needed
+                filtered_entries.append(entry)
+                continue
+            
+            # Get folder from database
+            folder = db.get_folder_by_drive_id(drive_folder_id)
+            if not folder:
+                # Folder not in database, allow access (legacy entries)
+                filtered_entries.append(entry)
+                continue
+            
+            # Check if user's role has access to this folder
+            folder_with_roles = db.get_folder_with_roles(folder['id'])
+            if not folder_with_roles or not folder_with_roles.get('roles'):
+                # No role restrictions set, allow access
+                filtered_entries.append(entry)
+                continue
+            
+            # Check if user's role is in the allowed roles
+            allowed_roles = [r['role'] for r in folder_with_roles['roles']]
+            if user_role in allowed_roles:
+                filtered_entries.append(entry)
+        
+        return filtered_entries
 
     def _build_context_for_claude(self, entries, query):
         """Build context string from entries, filtering by relevance"""

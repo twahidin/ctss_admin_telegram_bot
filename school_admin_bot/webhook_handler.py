@@ -209,14 +209,61 @@ def process_drive_changes(channel_id):
                     logger.debug(f"Skipping folder: {file_name}")
                     continue
                 
-                # Check if file is in our watched folder
+                # Check if file is in our watched folder or any subfolder
                 parents = file_info.get('parents', [])
+                
+                # Check if file is directly in watched folder
                 if folder_id in parents or file_id == folder_id:
                     files_to_sync.append({
                         'id': file_id,
                         'name': file_name,
-                        'mimeType': mime_type
+                        'mimeType': mime_type,
+                        'parents': parents
                     })
+                else:
+                    # Check if file is in a subfolder of watched folder (recursive)
+                    # We need to check if any parent is a subfolder of the watched folder
+                    if parents:
+                        # Get the immediate parent
+                        parent_id = parents[0]
+                        try:
+                            # Check if this parent is in the watched folder tree
+                            parent_info = drive_sync_instance.service.files().get(
+                                fileId=parent_id,
+                                fields='id, name, parents, mimeType'
+                            ).execute()
+                            
+                            # Walk up the tree to see if we reach the watched folder
+                            current_parent = parent_info
+                            max_depth = 10
+                            depth = 0
+                            in_watched_tree = False
+                            
+                            while current_parent and depth < max_depth:
+                                parent_parents = current_parent.get('parents', [])
+                                if folder_id in parent_parents:
+                                    # This is a subfolder of watched folder
+                                    in_watched_tree = True
+                                    break
+                                if not parent_parents:
+                                    break
+                                # Move up one level
+                                current_parent = drive_sync_instance.service.files().get(
+                                    fileId=parent_parents[0],
+                                    fields='id, name, parents, mimeType'
+                                ).execute()
+                                depth += 1
+                            
+                            if in_watched_tree:
+                                files_to_sync.append({
+                                    'id': file_id,
+                                    'name': file_name,
+                                    'mimeType': mime_type,
+                                    'parents': parents,
+                                    '_in_subfolder': True
+                                })
+                        except Exception as e:
+                            logger.debug(f"Error checking subfolder for {file_name}: {e}")
                 else:
                     # Check if this is a tracked shortcut target file
                     shortcut_info = db.get_shortcut_by_target(file_id)
@@ -333,13 +380,29 @@ def sync_changed_files(files, folder, sync_user_id):
                         except:
                             extracted_text = f"[Binary file: {file['name']}]"
 
+                # Determine which folder this file belongs to
+                file_folder_name = folder['folder_name']
+                if file.get('_in_subfolder') and file.get('parents'):
+                    # Try to get the subfolder name
+                    try:
+                        parent_id = file['parents'][0]
+                        parent_info = drive_sync_instance.service.files().get(
+                            fileId=parent_id,
+                            fields='name'
+                        ).execute()
+                        subfolder_name = parent_info.get('name', 'Unknown')
+                        file_folder_name = f"{folder['folder_name']}/{subfolder_name}"
+                    except:
+                        pass
+                
                 # Save to database
                 content_data = {
                     "type": file_type,
                     "file_name": file['name'],
                     "extracted_text": extracted_text,
                     "source": "google_drive_webhook",
-                    "folder": folder['folder_name'],
+                    "folder": file_folder_name,
+                    "drive_folder_id": folder['drive_folder_id'],  # Store for access control
                 }
 
                 db.add_entry(sync_user_id, category, content_data)

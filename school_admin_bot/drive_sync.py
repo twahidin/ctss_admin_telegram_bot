@@ -73,25 +73,94 @@ class DriveSync:
                 return folder
         return None
 
-    def list_files_in_folder(self, folder_id: str) -> List[Dict]:
+    def list_files_in_folder(self, folder_id: str, recursive: bool = False) -> List[Dict]:
         """
         List all files in a folder
-        Returns list of file dicts with: id, name, mimeType, size
+        If recursive=True, also includes files in subfolders
+        Returns list of file dicts with: id, name, mimeType, size, parents (for folder tracking)
         """
         try:
+            all_files = []
+            
+            # List files directly in this folder
             results = self.service.files().list(
                 q=f"'{folder_id}' in parents and trashed=false",
-                fields="files(id, name, mimeType, size, modifiedTime)",
+                fields="files(id, name, mimeType, size, modifiedTime, parents)",
                 pageSize=100
             ).execute()
 
-            files = results.get('files', [])
-            logger.info(f"Found {len(files)} files in folder {folder_id}")
-            return files
+            items = results.get('files', [])
+            
+            for item in items:
+                mime_type = item.get('mimeType', '')
+                
+                # If it's a folder and recursive, get files from it
+                if mime_type == 'application/vnd.google-apps.folder' and recursive:
+                    subfolder_files = self.list_files_in_folder(item['id'], recursive=True)
+                    all_files.extend(subfolder_files)
+                elif mime_type != 'application/vnd.google-apps.folder':
+                    # It's a file, add it
+                    all_files.append(item)
+            
+            if not recursive:
+                logger.info(f"Found {len(all_files)} files in folder {folder_id}")
+            return all_files
 
         except HttpError as error:
             logger.error(f"Error listing files: {error}")
             return []
+    
+    def get_file_folder_path(self, file_id: str, root_folder_id: str) -> Optional[str]:
+        """
+        Get the folder path for a file relative to root folder
+        Returns folder name or None if not in watched tree
+        """
+        try:
+            file_metadata = self.service.files().get(
+                fileId=file_id,
+                fields='id, name, parents'
+            ).execute()
+            
+            parents = file_metadata.get('parents', [])
+            if not parents:
+                return None
+            
+            # Check if file is in root folder or its subfolders
+            current_id = parents[0]
+            folder_path = []
+            
+            # Walk up the folder tree
+            max_depth = 10  # Prevent infinite loops
+            depth = 0
+            while current_id and depth < max_depth:
+                if current_id == root_folder_id:
+                    # We've reached the root, return the path
+                    if folder_path:
+                        # Return the immediate parent folder name
+                        folder_info = self.service.files().get(
+                            fileId=folder_path[-1],
+                            fields='name'
+                        ).execute()
+                        return folder_info.get('name', 'Unknown')
+                    else:
+                        return None  # File is directly in root
+                
+                # Get parent folder info
+                parent_info = self.service.files().get(
+                    fileId=current_id,
+                    fields='id, name, parents'
+                ).execute()
+                
+                folder_path.append(current_id)
+                parent_parents = parent_info.get('parents', [])
+                current_id = parent_parents[0] if parent_parents else None
+                depth += 1
+            
+            return None  # File not in watched tree
+            
+        except HttpError as error:
+            logger.debug(f"Error getting file folder path: {error}")
+            return None
 
     def download_file(self, file_id: str) -> Optional[bytes]:
         """Download a file by ID, returns file content as bytes"""

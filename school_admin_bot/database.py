@@ -61,16 +61,36 @@ class Database:
                 content JSONB NOT NULL,
                 uploaded_by BIGINT NOT NULL,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                drive_file_id TEXT,
                 FOREIGN KEY (uploaded_by) REFERENCES users(telegram_id)
             )
         """
         )
+
+        # Add drive_file_id column if missing (migration for existing DBs)
+        try:
+            cursor.execute(
+                """
+                ALTER TABLE daily_entries 
+                ADD COLUMN IF NOT EXISTS drive_file_id TEXT
+                """
+            )
+        except Exception:
+            pass
 
         # Create index on date for fast queries
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_daily_entries_date 
             ON daily_entries(date)
+        """
+        )
+        # Index for upsert: find today's entry by drive_file_id
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_daily_entries_date_drive_file_id 
+            ON daily_entries(date, drive_file_id) 
+            WHERE drive_file_id IS NOT NULL
         """
         )
 
@@ -392,8 +412,8 @@ class Database:
 
     # ===== ENTRY MANAGEMENT =====
 
-    def add_entry(self, uploaded_by, tag, content_data):
-        """Add a new daily entry"""
+    def add_entry(self, uploaded_by, tag, content_data, drive_file_id=None):
+        """Add a new daily entry (optional drive_file_id for Drive-synced files)."""
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -401,18 +421,64 @@ class Database:
 
         cursor.execute(
             """
-            INSERT INTO daily_entries (date, tag, content, uploaded_by)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO daily_entries (date, tag, content, uploaded_by, drive_file_id)
+            VALUES (%s, %s, %s, %s, %s)
         """,
-            (today, tag, json.dumps(content_data), uploaded_by),
+            (today, tag, json.dumps(content_data), uploaded_by, drive_file_id),
         )
 
         conn.commit()
         cursor.close()
         conn.close()
 
+    def add_or_update_drive_entry(self, uploaded_by, tag, content_data):
+        """
+        Upsert a Drive-synced entry: one row per drive_file_id per day.
+        content_data must include 'drive_file_id'. If an entry for today with
+        that drive_file_id exists, update its content and timestamp; otherwise insert.
+        """
+        drive_file_id = content_data.get("drive_file_id") if isinstance(content_data, dict) else None
+        if not drive_file_id:
+            # Fallback: insert (e.g. legacy callers)
+            self.add_entry(uploaded_by, tag, content_data, drive_file_id=None)
+            return
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        today = date.today()
+
+        cursor.execute(
+            """
+            SELECT id FROM daily_entries
+            WHERE date = %s AND drive_file_id = %s
+            LIMIT 1
+            """,
+            (today, drive_file_id),
+        )
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                """
+                UPDATE daily_entries
+                SET content = %s, tag = %s, timestamp = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (json.dumps(content_data), tag, row[0]),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO daily_entries (date, tag, content, uploaded_by, drive_file_id)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (today, tag, json.dumps(content_data), uploaded_by, drive_file_id),
+            )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
     def get_today_entries(self):
-        """Get all entries for today"""
+        """Get all entries for today. When multiple rows share the same drive_file_id, only the latest (by timestamp) is returned."""
         conn = self.get_connection()
         cursor = conn.cursor(row_factory=dict_row)
 
@@ -420,7 +486,7 @@ class Database:
 
         cursor.execute(
             """
-            SELECT id, tag, content, uploaded_by, 
+            SELECT id, tag, content, uploaded_by, drive_file_id,
                    TO_CHAR(timestamp, 'HH24:MI') as timestamp
             FROM daily_entries 
             WHERE date = %s
@@ -429,11 +495,22 @@ class Database:
             (today,),
         )
 
-        entries = cursor.fetchall()
+        rows = cursor.fetchall()
         cursor.close()
         conn.close()
 
-        return [dict(entry) for entry in entries]
+        # Deduplicate by drive_file_id: keep latest (first in DESC order) per file
+        seen_file_ids = set()
+        entries = []
+        for entry in rows:
+            e = dict(entry)
+            fid = e.get("drive_file_id")
+            if fid and fid in seen_file_ids:
+                continue
+            if fid:
+                seen_file_ids.add(fid)
+            entries.append(e)
+        return entries
 
     def get_user_uploads_today(self, telegram_id):
         """Get user's uploads for today"""

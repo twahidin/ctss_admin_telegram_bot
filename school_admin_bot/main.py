@@ -1618,7 +1618,7 @@ Text to parse:
                                 except:
                                     extracted_text = f"[Binary file: {file['name']}]"
                         
-                        # Save to database
+                        # Save to database (upsert by drive_file_id: one entry per file per day)
                         content_data = {
                             "type": file_type,
                             "file_name": file['name'],
@@ -1626,9 +1626,12 @@ Text to parse:
                             "source": "google_drive",
                             "folder": folder_name,
                             "drive_folder_id": drive_folder_id,  # Store for access control
+                            "drive_file_id": file.get('id'),  # For upsert
                         }
-                        
-                        db.add_entry(user_id, category, content_data)
+                        if content_data.get("drive_file_id"):
+                            db.add_or_update_drive_entry(user_id, category, content_data)
+                        else:
+                            db.add_entry(user_id, category, content_data)
                         files_processed_count += 1
                         
                     except Exception as e:
@@ -2295,7 +2298,7 @@ TODAY'S INFORMATION:
 
 QUESTION: {query}
 
-Provide a direct, concise answer. If the information isn't available, say so clearly.""",
+Provide a direct, concise answer based only on the information above. If the documents clearly list someone or something for a date, say so; do not state 'no request' or 'not listed' when the text explicitly shows otherwise. If the information isn't in the documents, say so clearly.""",
                     }
                 ],
             )
@@ -3264,16 +3267,20 @@ Provide a summary of the main points:"""
                                 except:
                                     extracted_text = f"[Binary file: {file['name']}]"
                         
-                        # Save to database
+                        # Save to database (upsert by drive_file_id: one entry per file per day)
                         content_data = {
                             "type": file_type,
                             "file_name": file['name'],
                             "extracted_text": extracted_text,
                             "source": "google_drive_auto",
                             "folder": folder_name,
+                            "drive_folder_id": drive_folder_id,
+                            "drive_file_id": file.get('id'),
                         }
-                        
-                        db.add_entry(sync_user_id, category, content_data)
+                        if content_data.get("drive_file_id"):
+                            db.add_or_update_drive_entry(sync_user_id, category, content_data)
+                        else:
+                            db.add_entry(sync_user_id, category, content_data)
                         files_processed_count += 1
                         
                     except Exception as e:

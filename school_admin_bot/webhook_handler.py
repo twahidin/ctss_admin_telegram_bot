@@ -419,7 +419,8 @@ def sync_changed_files(files, folder, sync_user_id):
                     except Exception as e:
                         logger.debug(f"Could not resolve subfolder for file {file.get('name')}: {e}")
                 
-                # Save to database (use effective_folder so access control works per subfolder)
+                # Save to database (use effective_folder so access control works per subfolder).
+                # Include drive_file_id for upsert: one entry per file per day (update on re-sync).
                 content_data = {
                     "type": file_type,
                     "file_name": file['name'],
@@ -427,9 +428,10 @@ def sync_changed_files(files, folder, sync_user_id):
                     "source": "google_drive_webhook",
                     "folder": file_folder_name,
                     "drive_folder_id": effective_folder['drive_folder_id'],  # For access control
+                    "drive_file_id": file['id'],  # For upsert: same file re-synced today = update row
                 }
 
-                db.add_entry(sync_user_id, category, content_data)
+                db.add_or_update_drive_entry(sync_user_id, category, content_data)
                 total_processed += 1
 
             except Exception as e:

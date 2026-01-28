@@ -541,12 +541,29 @@ Text to parse:
         await update.message.reply_text(help_text, parse_mode="Markdown")
 
     async def helpsuper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show super admin help - hidden command"""
+        """Show super admin help"""
         user_id = update.effective_user.id
+        user = db.get_user(user_id)
         
-        # Only original super admins from config can see this
-        if user_id not in SUPER_ADMIN_IDS:
-            return  # Silently ignore
+        if not user:
+            await update.message.reply_text(
+                "You're not registered. Use /start to begin."
+            )
+            return
+        
+        # Check if user is a protected superadmin from config
+        is_protected_superadmin = user_id in SUPER_ADMIN_IDS
+        is_superadmin_role = user["role"] == "superadmin"
+        
+        if not (is_protected_superadmin or is_superadmin_role):
+            help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
+            help_text += "❌ *You don't have access to these commands.*\n\n"
+            help_text += "These commands are available to:\n"
+            help_text += "• Protected super admins (from config)\n"
+            help_text += "• Users with superadmin role\n\n"
+            help_text += "Use /help to see commands available to your role."
+            await update.message.reply_text(help_text, parse_mode="Markdown")
+            return
 
         help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
         help_text += "*User Management:*\n"

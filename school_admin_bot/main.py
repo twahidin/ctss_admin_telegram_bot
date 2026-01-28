@@ -416,7 +416,7 @@ Text to parse:
         help_text = "📚 *HELP - GENERAL COMMANDS*\n\n"
         help_text += "*Information & Queries:*\n"
         help_text += "/ask [question] - Ask questions about today's information\n"
-        help_text += "  └ Example: /ask Who's teaching 3A at 10am?\n"
+        help_text += "  • Example: /ask Who's teaching 3A at 10am?\n"
         help_text += "/today - View all categories and entry counts for today\n\n"
 
         # Show role-specific help links
@@ -476,7 +476,13 @@ Text to parse:
             if user["role"] in ["admin", "superadmin"]:
                 help_text += "/helpadmin - View admin management commands\n"
 
-            await update.message.reply_text(help_text, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+            except Exception as parse_error:
+                # Fallback to plain text if Markdown fails
+                logger.warning(f"Markdown parse error in helprelief, using plain text: {parse_error}")
+                help_text_plain = help_text.replace("*", "").replace("_", "")
+                await update.message.reply_text(help_text_plain)
         except Exception as e:
             logger.error(f"Error in helprelief: {e}", exc_info=True)
             try:
@@ -611,7 +617,13 @@ Text to parse:
             help_text += "/helpadmin - View admin management commands\n\n"
             help_text += f"Your account (ID: {user_id}) is protected and cannot be removed."
 
-            await update.message.reply_text(help_text, parse_mode="Markdown")
+            try:
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+            except Exception as parse_error:
+                # Fallback to plain text if Markdown fails
+                logger.warning(f"Markdown parse error in helpsuper, using plain text: {parse_error}")
+                help_text_plain = help_text.replace("*", "").replace("_", "")
+                await update.message.reply_text(help_text_plain)
         except Exception as e:
             logger.error(f"Error in helpsuper: {e}", exc_info=True)
             try:

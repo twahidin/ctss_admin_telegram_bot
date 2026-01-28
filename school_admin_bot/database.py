@@ -1344,6 +1344,78 @@ class Database:
         cursor.close()
         conn.close()
 
+    # ===== ROLE ASSUMPTION =====
+
+    def assume_role(self, telegram_id, assumed_role, original_role):
+        """Store role assumption for a superadmin"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO role_assumptions (telegram_id, original_role, assumed_role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (telegram_id) 
+            DO UPDATE SET original_role = EXCLUDED.original_role,
+                         assumed_role = EXCLUDED.assumed_role,
+                         assumed_at = CURRENT_TIMESTAMP
+            RETURNING id
+        """,
+            (telegram_id, original_role, assumed_role),
+        )
+
+        assumption_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return assumption_id
+
+    def get_role_assumption(self, telegram_id):
+        """Get current role assumption for a user"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT telegram_id, original_role, assumed_role, assumed_at
+            FROM role_assumptions 
+            WHERE telegram_id = %s
+        """,
+            (telegram_id,),
+        )
+
+        assumption = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(assumption) if assumption else None
+
+    def resume_role(self, telegram_id):
+        """Remove role assumption and return original role"""
+        assumption = self.get_role_assumption(telegram_id)
+        
+        if not assumption:
+            return None
+        
+        original_role = assumption['original_role']
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM role_assumptions WHERE telegram_id = %s
+        """,
+            (telegram_id,),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return original_role
+
     # ===== STATISTICS =====
 
     def get_stats(self):

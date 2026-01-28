@@ -204,6 +204,11 @@ def process_drive_changes(channel_id):
                 file_name = file_info.get('name', '')
                 mime_type = file_info.get('mimeType', '')
                 
+                # Skip folders - we only sync files
+                if mime_type == 'application/vnd.google-apps.folder':
+                    logger.debug(f"Skipping folder: {file_name}")
+                    continue
+                
                 # Check if file is in our watched folder
                 parents = file_info.get('parents', [])
                 if folder_id in parents or file_id == folder_id:

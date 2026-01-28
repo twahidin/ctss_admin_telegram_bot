@@ -1325,94 +1325,104 @@ Text to parse:
 
     async def set_folder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Set folder-role access mapping (superadmin only)"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        
-        if not user or user["role"] != "superadmin":
-            await update.message.reply_text("❌ Only super admins can configure folders.")
-            return
-        
-        if not self.drive_sync:
-            await update.message.reply_text("❌ Google Drive is not configured.")
-            return
-        
-        if len(context.args) < 2:
-            await update.message.reply_text(
-                "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
-                "Example: /setfolder \"Relief Committee\" relief_member,admin\n\n"
-                "Available roles: viewer, relief_member, admin, superadmin\n\n"
-                "⚠️ Use *quotes* around folder names with spaces (e.g. \"Relief Committee\").",
-                parse_mode="Markdown"
-            )
-            return
-        
-        valid_roles = ["viewer", "relief_member", "admin", "superadmin"]
-        raw_args = [a.strip('"\'') for a in context.args]
-        
-        # Parse: folder name may be one or more words; rest are role1,role2,...
-        folder_name = None
-        roles = None
-        # If first arg looks like a single quoted folder name (no comma), use it and rest as roles
-        if len(raw_args) >= 2:
-            roles_str = " ".join(raw_args[1:])
-            roles = [r.strip() for r in roles_str.split(",")]
-            invalid = [r for r in roles if r not in valid_roles]
-            if not invalid:
-                folder_name = raw_args[0]
-        
-        # If that failed (e.g. multi-word folder without quotes), try joining words until roles are valid
-        if folder_name is None and len(raw_args) >= 2:
-            for i in range(1, len(raw_args)):
-                folder_name = " ".join(raw_args[:i])
-                roles_str = " ".join(raw_args[i:])
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
+            
+            if not user or user["role"] != "superadmin":
+                await update.message.reply_text("❌ Only super admins can configure folders.")
+                return
+            
+            if not self.drive_sync:
+                await update.message.reply_text("❌ Google Drive is not configured.")
+                return
+            
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    "Usage: /setfolder \"Folder Name\" role1,role2\n\n"
+                    "Example: /setfolder \"Relief Committee\" relief_member,admin\n\n"
+                    "Available roles: viewer, relief_member, admin, superadmin\n\n"
+                    "⚠️ Use *quotes* around folder names with spaces (e.g. \"Relief Committee\").",
+                    parse_mode="Markdown"
+                )
+                return
+            
+            valid_roles = ["viewer", "relief_member", "admin", "superadmin"]
+            raw_args = [a.strip('"\'') for a in context.args]
+            
+            # Parse: folder name may be one or more words; rest are role1,role2,...
+            folder_name = None
+            roles = None
+            # If first arg looks like a single quoted folder name (no comma), use it and rest as roles
+            if len(raw_args) >= 2:
+                roles_str = " ".join(raw_args[1:])
                 roles = [r.strip() for r in roles_str.split(",")]
                 invalid = [r for r in roles if r not in valid_roles]
                 if not invalid:
-                    break
-            else:
-                folder_name = None
-                roles = [r.strip() for r in " ".join(raw_args[1:]).split(",")]
-                invalid_roles = [r for r in roles if r not in valid_roles]
+                    folder_name = raw_args[0]
+            
+            # If that failed (e.g. multi-word folder without quotes), try joining words until roles are valid
+            if folder_name is None and len(raw_args) >= 2:
+                for i in range(1, len(raw_args)):
+                    folder_name = " ".join(raw_args[:i])
+                    roles_str = " ".join(raw_args[i:])
+                    roles = [r.strip() for r in roles_str.split(",")]
+                    invalid = [r for r in roles if r not in valid_roles]
+                    if not invalid:
+                        break
+                else:
+                    folder_name = None
+                    roles = [r.strip() for r in " ".join(raw_args[1:]).split(",")]
+                    invalid_roles = [r for r in roles if r not in valid_roles]
+                    await update.message.reply_text(
+                        f"❌ Invalid roles: {', '.join(invalid_roles)}\n\n"
+                        f"Valid roles: {', '.join(valid_roles)}\n\n"
+                        f"💡 If the folder name has spaces, use quotes: /setfolder \"Relief Committee\" relief_member,admin"
+                    )
+                    return
+            
+            if folder_name is None or not roles:
                 await update.message.reply_text(
-                    f"❌ Invalid roles: {', '.join(invalid_roles)}\n\n"
-                    f"Valid roles: {', '.join(valid_roles)}\n\n"
-                    f"💡 If the folder name has spaces, use quotes: /setfolder \"Relief Committee\" relief_member,admin"
+                    "❌ Could not parse folder name and roles. Use: /setfolder \"Folder Name\" role1,role2"
                 )
                 return
-        
-        if folder_name is None or not roles:
-            await update.message.reply_text(
-                "❌ Could not parse folder name and roles. Use: /setfolder \"Folder Name\" role1,role2"
+            
+            # Find folder in Drive
+            folder = self.drive_sync.get_folder_by_name(folder_name)
+            if not folder:
+                await update.message.reply_text(
+                    f"❌ Folder '{folder_name}' not found in Google Drive.\n\n"
+                    f"Use /listfolders to see available folders.\n\n"
+                    f"💡 Check spelling (e.g. \"Committee\" not \"Commitee\")."
+                )
+                return
+            
+            # Add/update folder in database
+            folder_id = db.add_or_update_drive_folder(
+                folder_name=folder['name'],
+                drive_folder_id=folder['id'],
+                parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
             )
-            return
-        
-        # Find folder in Drive
-        folder = self.drive_sync.get_folder_by_name(folder_name)
-        if not folder:
+            
+            # Set role access
+            db.set_folder_role_access(folder_id, roles)
+            
             await update.message.reply_text(
-                f"❌ Folder '{folder_name}' not found in Google Drive.\n\n"
-                f"Use /listfolders to see available folders.\n\n"
-                f"💡 Check spelling (e.g. \"Committee\" not \"Commitee\")."
+                f"✅ *Folder configured!*\n\n"
+                f"*Folder:* {folder['name']}\n"
+                f"*Accessible to:* {', '.join(roles)}\n\n"
+                f"Use /sync to sync files from this folder.",
+                parse_mode="Markdown"
             )
-            return
-        
-        # Add/update folder in database
-        folder_id = db.add_or_update_drive_folder(
-            folder_name=folder['name'],
-            drive_folder_id=folder['id'],
-            parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
-        )
-        
-        # Set role access
-        db.set_folder_role_access(folder_id, roles)
-        
-        await update.message.reply_text(
-            f"✅ *Folder configured!*\n\n"
-            f"*Folder:* {folder['name']}\n"
-            f"*Accessible to:* {', '.join(roles)}\n\n"
-            f"Use /sync to sync files from this folder.",
-            parse_mode="Markdown"
-        )
+        except Exception as e:
+            logger.error(f"Error in set_folder command: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ Error configuring folder: {str(e)[:200]}\n\n"
+                f"Please check:\n"
+                f"• Folder name spelling\n"
+                f"• Database connection\n"
+                f"• Google Drive API access"
+            )
 
     async def list_folders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List all folders and their role access"""

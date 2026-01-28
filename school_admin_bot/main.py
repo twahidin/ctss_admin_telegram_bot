@@ -1623,6 +1623,25 @@ Text to parse:
             )
             return
         
+        # Validate webhook URL format
+        if not WEBHOOK_URL.endswith('/webhook/drive'):
+            # Auto-fix: append /webhook/drive if missing
+            if WEBHOOK_URL.endswith('/'):
+                corrected_url = WEBHOOK_URL + 'webhook/drive'
+            else:
+                corrected_url = WEBHOOK_URL + '/webhook/drive'
+            
+            await update.message.reply_text(
+                f"⚠️ *Webhook URL format issue*\n\n"
+                f"Your current URL: `{WEBHOOK_URL}`\n\n"
+                f"The webhook URL must end with `/webhook/drive`\n\n"
+                f"Please update `WEBHOOK_URL` in Railway to:\n"
+                f"`{corrected_url}`\n\n"
+                f"Then restart the bot and try again.",
+                parse_mode="Markdown"
+            )
+            return
+        
         await update.message.reply_text("🔄 Registering webhook for auto-sync...")
         
         try:
@@ -1691,7 +1710,24 @@ Text to parse:
         if not WEBHOOK_URL:
             await update.message.reply_text(
                 "❌ *Webhook not configured*\n\n"
-                "Please set `WEBHOOK_URL` environment variable.",
+                "Please set `WEBHOOK_URL` environment variable.\n"
+                "Format: `https://your-bot.railway.app/webhook/drive`",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Check URL format
+        if not WEBHOOK_URL.endswith('/webhook/drive'):
+            if WEBHOOK_URL.endswith('/'):
+                suggested_url = WEBHOOK_URL + 'webhook/drive'
+            else:
+                suggested_url = WEBHOOK_URL + '/webhook/drive'
+            
+            await update.message.reply_text(
+                f"⚠️ *Webhook URL format issue*\n\n"
+                f"Current URL: `{WEBHOOK_URL}`\n\n"
+                f"Must end with `/webhook/drive`\n\n"
+                f"Update to: `{suggested_url}`",
                 parse_mode="Markdown"
             )
             return

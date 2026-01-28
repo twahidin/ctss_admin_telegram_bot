@@ -300,10 +300,20 @@ class Database:
 
         if user:
             user_dict = dict(user)
-            # Use effective_role for role checks, but keep original role
-            if user_dict.get('is_assumed'):
-                user_dict['original_role'] = user_dict.get('original_role') or user_dict['role']
-                user_dict['role'] = user_dict['effective_role']
+            # Always use effective_role for role checks (it's already calculated correctly in SQL)
+            # effective_role = COALESCE(assumed_role, role) - so it's always the right value
+            is_assumed = bool(user_dict.get('is_assumed', False))
+            
+            if is_assumed:
+                # Store original role before overwriting
+                user_dict['original_role'] = user_dict.get('original_role') or user_dict.get('role')
+            
+            # Always use effective_role as the current role (handles both assumed and non-assumed cases)
+            # This ensures role assumptions are always respected
+            effective_role = user_dict.get('effective_role')
+            if effective_role:
+                user_dict['role'] = effective_role
+            
             return user_dict
         return None
 

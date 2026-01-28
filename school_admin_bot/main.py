@@ -2229,8 +2229,11 @@ Text to parse:
         # Use effective role (respects role assumptions)
         user_role = user.get("role", "viewer")
         # Log for debugging role assumption issues
-        if user.get('is_assumed'):
-            logger.info(f"User {user_id} has assumed role '{user_role}' (original: {user.get('original_role', 'unknown')})")
+        is_assumed = user.get('is_assumed', False)
+        if is_assumed:
+            logger.info(f"User {user_id} has assumed role '{user_role}' (original: {user.get('original_role', 'unknown')}, effective_role: {user.get('effective_role', 'unknown')})")
+        else:
+            logger.debug(f"User {user_id} using role '{user_role}' (no assumption)")
         entries = self._filter_entries_by_folder_access(all_entries, user_role)
 
         if not entries:

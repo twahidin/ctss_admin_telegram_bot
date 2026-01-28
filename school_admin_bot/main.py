@@ -1667,11 +1667,11 @@ Text to parse:
                     "❌ Failed to register webhook. Check logs for details."
                 )
                 
-            except Exception as e:
-                logger.error(f"Error registering webhook: {e}", exc_info=True)
-                await update.message.reply_text(
-                    f"❌ Error registering webhook: {str(e)}"
-                )
+        except Exception as e:
+            logger.error(f"Error registering webhook: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ Error registering webhook: {str(e)}"
+            )
 
     async def webhook_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Check webhook status and health (superadmin only)"""

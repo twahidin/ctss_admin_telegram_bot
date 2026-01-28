@@ -1,11 +1,6 @@
 """
 Google Drive Webhook Handler
-Handles incoming webhook notifications from Google Drive.
-
-Auto-sync: When a Google Doc, Sheet, Presentation, PDF, or image is modified or
-uploaded in the watched root folder (or any subfolder), the webhook triggers and
-we sync only those file types. Run /registerwebhook once to enable (requires
-WEBHOOK_URL and a public URL). Webhook watches the entire folder tree.
+Handles incoming webhook notifications from Google Drive
 """
 import json
 import logging
@@ -182,9 +177,7 @@ def process_drive_changes(channel_id):
             logger.error("Drive sync instance not available")
             return
 
-        # Use folder's drive ID if in a shared drive, so we get that drive's changelog
-        drive_id = drive_sync_instance.get_folder_drive_id(folder_id)
-        changes_result = drive_sync_instance.get_changes(page_token, drive_id=drive_id)
+        changes_result = drive_sync_instance.get_changes(page_token)
         changes = changes_result.get('changes', [])
         new_page_token = changes_result.get('newStartPageToken')
 
@@ -219,21 +212,6 @@ def process_drive_changes(channel_id):
                 # Check if file is in our watched folder or any subfolder
                 parents = file_info.get('parents', [])
                 
-                # Only auto-sync Google Docs, Sheets, PDFs, and images (skip other types)
-                AUTO_SYNC_MIME_TYPES = (
-                    'application/vnd.google-apps.document',
-                    'application/vnd.google-apps.spreadsheet',
-                    'application/vnd.google-apps.presentation',
-                    'application/pdf',
-                    'application/vnd.google-apps.shortcut',
-                )
-                is_doc_or_sheet = mime_type in AUTO_SYNC_MIME_TYPES
-                is_pdf = mime_type == 'application/pdf' or (file_name and file_name.lower().endswith('.pdf'))
-                is_image = (mime_type or '').startswith('image/')
-                if not (is_doc_or_sheet or is_pdf or is_image):
-                    logger.debug(f"Skipping auto-sync for unsupported type: {file_name} ({mime_type})")
-                    continue
-
                 # Check if file is directly in watched folder
                 if folder_id in parents or file_id == folder_id:
                     files_to_sync.append({
@@ -402,45 +380,39 @@ def sync_changed_files(files, folder, sync_user_id):
                         except:
                             extracted_text = f"[Binary file: {file['name']}]"
 
-                # Determine which folder this file belongs to (for display and access control)
+                # Determine which folder this file belongs to
                 file_folder_name = folder['folder_name']
-                effective_folder = folder  # Use for drive_folder_id and DB updates
                 if file.get('_in_subfolder') and file.get('parents'):
-                    parent_id = file['parents'][0]
+                    # Try to get the subfolder name
                     try:
+                        parent_id = file['parents'][0]
                         parent_info = drive_sync_instance.service.files().get(
                             fileId=parent_id,
                             fields='name'
                         ).execute()
                         subfolder_name = parent_info.get('name', 'Unknown')
                         file_folder_name = f"{folder['folder_name']}/{subfolder_name}"
-                        # Use subfolder's drive_folder_id for access control if it's in our DB
-                        subfolder_db = db.get_folder_by_drive_id(parent_id)
-                        if subfolder_db:
-                            effective_folder = subfolder_db
-                    except Exception as e:
-                        logger.debug(f"Could not resolve subfolder for file {file.get('name')}: {e}")
+                    except:
+                        pass
                 
-                # Save to database (use effective_folder so access control works per subfolder).
-                # Include drive_file_id for upsert: one entry per file per day (update on re-sync).
+                # Save to database
                 content_data = {
                     "type": file_type,
                     "file_name": file['name'],
                     "extracted_text": extracted_text,
                     "source": "google_drive_webhook",
                     "folder": file_folder_name,
-                    "drive_folder_id": effective_folder['drive_folder_id'],  # For access control
-                    "drive_file_id": file['id'],  # For upsert: same file re-synced today = update row
+                    "drive_folder_id": folder['drive_folder_id'],  # Store for access control
                 }
 
-                db.add_or_update_drive_entry(sync_user_id, category, content_data)
+                db.add_entry(sync_user_id, category, content_data)
                 total_processed += 1
 
             except Exception as e:
                 logger.error(f"Error processing file {file.get('name', 'unknown')}: {e}")
                 errors.append(f"{file.get('name', 'unknown')}: {str(e)}")
 
-        # Update sync time for the webhook's folder (root)
+        # Update sync time
         db.update_folder_sync_time(folder['id'])
 
         # Log sync
@@ -453,7 +425,7 @@ def sync_changed_files(files, folder, sync_user_id):
             synced_by=sync_user_id
         )
 
-        logger.info(f"✅ Webhook auto-sync complete: {total_processed}/{len(files)} files (Docs, Sheets, PDFs, images)")
+        logger.info(f"✅ Webhook sync complete: {total_processed}/{len(files)} files processed")
         
         # Notify admins of successful sync
         notify_admins(

@@ -1751,7 +1751,7 @@ Text to parse:
         
         await update.message.reply_text(message, parse_mode="Markdown")
 
-    def webhook_renewal_job(self, context: ContextTypes.DEFAULT_TYPE):
+    async def webhook_renewal_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Auto-renew webhooks that are expiring soon"""
         try:
             from config import WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID
@@ -1825,7 +1825,7 @@ Text to parse:
                             from config import SUPER_ADMIN_IDS
                             for admin_id in SUPER_ADMIN_IDS:
                                 try:
-                                    context.bot.send_message(
+                                    await context.bot.send_message(
                                         admin_id,
                                         f"✅ Webhook auto-renewed successfully!\n"
                                         f"New expiry: {expires_at_new.strftime('%Y-%m-%d %H:%M UTC') if expires_at_new else 'Never'}"

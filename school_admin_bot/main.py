@@ -1512,6 +1512,7 @@ Text to parse:
                             "extracted_text": extracted_text,
                             "source": "google_drive",
                             "folder": folder_name,
+                            "drive_folder_id": drive_folder_id,  # Store for access control
                         }
                         
                         db.add_entry(user_id, category, content_data)

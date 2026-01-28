@@ -5,6 +5,21 @@ import json
 import base64
 import logging
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+# Singapore timezone for "today" context in prompts
+SINGAPORE_TZ = ZoneInfo("Asia/Singapore")
+
+
+def get_singapore_now():
+    """Return current datetime in Singapore timezone."""
+    return datetime.now(SINGAPORE_TZ)
+
+
+def get_singapore_date_time_str():
+    """Return human-readable Singapore date and time for prompts (e.g. '28 January 2026, 5:20 PM SGT')."""
+    now = get_singapore_now()
+    return now.strftime("%d %B %Y, %I:%M %p SGT")
 import fitz  # PyMuPDF for PDF processing
 from psycopg.rows import dict_row
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -2245,7 +2260,8 @@ Text to parse:
         # Build context for Claude
         context_text = self._build_context_for_claude(entries, query)
 
-        # Query Claude
+        # Query Claude (include Singapore time so "today" is clear)
+        sgt_str = get_singapore_date_time_str()
         try:
             response = claude_client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -2254,6 +2270,9 @@ Text to parse:
                     {
                         "role": "user",
                         "content": f"""You are a helpful school admin assistant. Based on today's information, answer the following question concisely.
+
+CURRENT DATE/TIME (Singapore): {sgt_str}
+When the user says "today", it means this date in Singapore time.
 
 TODAY'S INFORMATION:
 {context_text}
@@ -2392,7 +2411,9 @@ Provide a direct, concise answer. If the information isn't available, say so cle
             tag = entry["tag"]
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-        summary = "📊 *TODAY'S INFORMATION*\n\n"
+        # Include Singapore date/time so "today" is unambiguous
+        sgt_str = get_singapore_date_time_str()
+        summary = f"📊 *TODAY'S INFORMATION* ({sgt_str})\n\n"
         
         # Build category list and buttons for categories with entries
         buttons = []
@@ -2448,7 +2469,8 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         # Build context for Claude
         context_text = self._build_context_for_claude(entries, "summary")
         
-        # Generate summary with Claude
+        # Generate summary with Claude (include Singapore time for "today" context)
+        sgt_str = get_singapore_date_time_str()
         try:
             response = claude_client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -2456,7 +2478,9 @@ Provide a direct, concise answer. If the information isn't available, say so cle
                 messages=[
                     {
                         "role": "user",
-                        "content": f"""Based on the following school information entries, provide a clear and organized summary of the MAIN POINTS.
+                        "content": f"""Current date/time (Singapore): {sgt_str}. "Today" refers to this date.
+
+Based on the following school information entries, provide a clear and organized summary of the MAIN POINTS.
 
 Format your response as bullet points grouped by category if there are multiple categories.
 Focus on key information like: names, times, classes, rooms, and any important details.
@@ -3432,8 +3456,8 @@ Provide a summary of the main points:"""
                 logger.warning(f"Failed to start webhook server: {e}")
 
         # Start polling (this blocks, but Flask runs in background thread)
-        # Add error handling for network issues
-        import time
+        # Add error handling for network issues (use time_module to avoid shadowing datetime.time)
+        import time as time_module
         max_retries = 3
         retry_delay = 10
         
@@ -3463,7 +3487,7 @@ Provide a summary of the main points:"""
                 
                 if attempt < max_retries - 1:
                     logger.info(f"Waiting {retry_delay} seconds before retry...")
-                    time.sleep(retry_delay)
+                    time_module.sleep(retry_delay)
                 else:
                     logger.error("Max retries reached. Bot polling failed.")
                     raise

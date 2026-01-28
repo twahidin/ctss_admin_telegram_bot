@@ -2239,6 +2239,7 @@ Text to parse:
 
         # Get today's entries
         all_entries = db.get_today_entries()
+        logger.debug(f"Retrieved {len(all_entries)} total entries from database")
 
         # Filter entries based on folder access rules
         # Use effective role (respects role assumptions)
@@ -2249,7 +2250,9 @@ Text to parse:
             logger.info(f"User {user_id} has assumed role '{user_role}' (original: {user.get('original_role', 'unknown')}, effective_role: {user.get('effective_role', 'unknown')})")
         else:
             logger.debug(f"User {user_id} using role '{user_role}' (no assumption)")
+        
         entries = self._filter_entries_by_folder_access(all_entries, user_role)
+        logger.info(f"After filtering: {len(entries)} entries accessible to role '{user_role}' (from {len(all_entries)} total)")
 
         if not entries:
             await update.message.reply_text(
@@ -2308,9 +2311,17 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         # Superadmins can access everything ONLY if their effective role is superadmin
         # If they've assumed a different role (e.g., viewer), respect that restriction
         if user_role == 'superadmin':
+            logger.debug("Superadmin role detected - allowing access to all entries")
             return entries
         
         filtered_entries = []
+        stats = {
+            'no_folder_id': 0,
+            'folder_not_found': 0,
+            'no_roles_set': 0,
+            'role_allowed': 0,
+            'role_denied': 0
+        }
         
         for entry in entries:
             # Handle content field - it might be a dict (from JSONB) or a string
@@ -2325,8 +2336,14 @@ Provide a direct, concise answer. If the information isn't available, say so cle
             
             if not drive_folder_id:
                 # Entry doesn't have folder info (e.g., manual upload)
-                # Allow access for now, or you can restrict if needed
-                filtered_entries.append(entry)
+                # SECURITY: Deny access to viewers for entries without folder info
+                # Only allow relief_member, admin, superadmin
+                if user_role in ['relief_member', 'admin']:
+                    filtered_entries.append(entry)
+                    stats['no_folder_id'] += 1
+                else:
+                    stats['role_denied'] += 1
+                    logger.debug(f"Entry {entry.get('id')} has no drive_folder_id - denying access to viewer")
                 continue
             
             # Get folder from database
@@ -2336,6 +2353,10 @@ Provide a direct, concise answer. If the information isn't available, say so cle
                 # Only allow access to relief_member, admin, superadmin (not viewers)
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
+                    stats['folder_not_found'] += 1
+                else:
+                    stats['role_denied'] += 1
+                    logger.debug(f"Folder {drive_folder_id} not found in database - denying access to viewer")
                 continue
             
             # Check if user's role has access to this folder
@@ -2346,7 +2367,10 @@ Provide a direct, concise answer. If the information isn't available, say so cle
                 # viewers do NOT have access unless explicitly granted
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
-                # viewer role is denied access when no restrictions are set
+                    stats['no_roles_set'] += 1
+                else:
+                    stats['role_denied'] += 1
+                    logger.debug(f"Folder '{folder['folder_name']}' has no roles set - denying access to viewer")
                 continue
             
             # Check if user's role is in the allowed roles
@@ -2354,7 +2378,12 @@ Provide a direct, concise answer. If the information isn't available, say so cle
             allowed_roles = folder_with_roles.get('roles', [])
             if user_role in allowed_roles:
                 filtered_entries.append(entry)
+                stats['role_allowed'] += 1
+            else:
+                stats['role_denied'] += 1
+                logger.debug(f"Role '{user_role}' not in allowed roles {allowed_roles} for folder '{folder['folder_name']}'")
         
+        logger.info(f"Filter stats for role '{user_role}': {stats}")
         return filtered_entries
 
     def _build_context_for_claude(self, entries, query):

@@ -2226,7 +2226,12 @@ Text to parse:
         all_entries = db.get_today_entries()
 
         # Filter entries based on folder access rules
-        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
+        # Use effective role (respects role assumptions)
+        user_role = user.get("role", "viewer")
+        # Log for debugging role assumption issues
+        if user.get('is_assumed'):
+            logger.info(f"User {user_id} has assumed role '{user_role}' (original: {user.get('original_role', 'unknown')})")
+        entries = self._filter_entries_by_folder_access(all_entries, user_role)
 
         if not entries:
             await update.message.reply_text(
@@ -2273,15 +2278,13 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         Filter entries based on folder access rules:
         - Each entry has a drive_folder_id in content_data
         - Check if user's role has access to that folder
-        - Superadmins have access to all folders
+        - Superadmins have access to all folders (unless they've assumed a different role)
         """
         if not entries:
             return entries
         
-        # Superadmins can access everything
-        from config import SUPER_ADMIN_IDS
-        # Note: user_role is a string, SUPER_ADMIN_IDS is a list of ints (telegram IDs)
-        # We check superadmin role, not ID here
+        # Superadmins can access everything ONLY if their effective role is superadmin
+        # If they've assumed a different role (e.g., viewer), respect that restriction
         if user_role == 'superadmin':
             return entries
         
@@ -2372,7 +2375,9 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         all_entries = db.get_today_entries()
 
         # Filter entries based on folder access rules
-        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
+        # Use effective role (respects role assumptions)
+        user_role = user.get("role", "viewer")
+        entries = self._filter_entries_by_folder_access(all_entries, user_role)
 
         if not entries:
             await update.message.reply_text("📭 No information accessible for your role today.")
@@ -2425,8 +2430,10 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         await query.edit_message_text("🔍 Generating summary... Please wait.")
         
         # Get entries and filter by folder access
+        # Use effective role (respects role assumptions)
         all_entries = db.get_today_entries()
-        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
+        user_role = user.get("role", "viewer")
+        entries = self._filter_entries_by_folder_access(all_entries, user_role)
         
         if category != "ALL":
             entries = [e for e in entries if e["tag"] == category]

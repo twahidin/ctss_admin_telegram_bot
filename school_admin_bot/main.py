@@ -2238,8 +2238,15 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         filtered_entries = []
         
         for entry in entries:
+            # Handle content field - it might be a dict (from JSONB) or a string
             content = entry.get('content', {})
-            drive_folder_id = content.get('drive_folder_id')
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    content = {}
+            
+            drive_folder_id = content.get('drive_folder_id') if isinstance(content, dict) else None
             
             if not drive_folder_id:
                 # Entry doesn't have folder info (e.g., manual upload)
@@ -2250,19 +2257,26 @@ Provide a direct, concise answer. If the information isn't available, say so cle
             # Get folder from database
             folder = db.get_folder_by_drive_id(drive_folder_id)
             if not folder:
-                # Folder not in database, allow access (legacy entries)
-                filtered_entries.append(entry)
+                # Folder not in database (legacy entries)
+                # Only allow access to relief_member, admin, superadmin (not viewers)
+                if user_role in ['relief_member', 'admin']:
+                    filtered_entries.append(entry)
                 continue
             
             # Check if user's role has access to this folder
             folder_with_roles = db.get_folder_with_roles(folder['id'])
             if not folder_with_roles or not folder_with_roles.get('roles'):
-                # No role restrictions set, allow access
-                filtered_entries.append(entry)
+                # No role restrictions set - default access rules:
+                # relief_member, admin, superadmin have access by default
+                # viewers do NOT have access unless explicitly granted
+                if user_role in ['relief_member', 'admin']:
+                    filtered_entries.append(entry)
+                # viewer role is denied access when no restrictions are set
                 continue
             
             # Check if user's role is in the allowed roles
-            allowed_roles = [r['role'] for r in folder_with_roles['roles']]
+            # roles is already a list of strings from get_folder_with_roles
+            allowed_roles = folder_with_roles.get('roles', [])
             if user_role in allowed_roles:
                 filtered_entries.append(entry)
         
@@ -2360,8 +2374,9 @@ Provide a direct, concise answer. If the information isn't available, say so cle
         
         await query.edit_message_text("🔍 Generating summary... Please wait.")
         
-        # Get entries
-        entries = db.get_today_entries()
+        # Get entries and filter by folder access
+        all_entries = db.get_today_entries()
+        entries = self._filter_entries_by_folder_access(all_entries, user["role"])
         
         if category != "ALL":
             entries = [e for e in entries if e["tag"] == category]

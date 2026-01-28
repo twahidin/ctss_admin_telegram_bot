@@ -187,7 +187,14 @@ class DriveSync:
                         fields='id, name, mimeType'
                     ).execute()
                     logger.info(f"Resolved shortcut {file_metadata.get('name')} to target: {target_file.get('name')}")
-                    return target_file
+                    return {
+                        'target_file': target_file,
+                        'shortcut_info': {
+                            'id': file_id,
+                            'name': file_metadata.get('name'),
+                            'target_id': target_id
+                        }
+                    }
             
             return None
         except HttpError as error:
@@ -206,8 +213,13 @@ class DriveSync:
         # Check if it's a shortcut - resolve to target file
         if mime_type == 'application/vnd.google-apps.shortcut':
             logger.info(f"Detected shortcut: {file.get('name')}, resolving to target file...")
-            target_file = self.resolve_shortcut(file_id)
-            if target_file:
+            shortcut_result = self.resolve_shortcut(file_id)
+            if shortcut_result:
+                target_file = shortcut_result.get('target_file')
+                shortcut_info = shortcut_result.get('shortcut_info')
+                # Store shortcut info for later webhook tracking
+                if shortcut_info:
+                    file['_shortcut_info'] = shortcut_info
                 # Recursively get content of target file
                 return self.get_file_content(target_file)
             else:

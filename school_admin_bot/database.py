@@ -205,6 +205,22 @@ class Database:
         """
         )
 
+        # Track shortcuts and their target files for watching
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shortcut_targets (
+                id SERIAL PRIMARY KEY,
+                shortcut_id TEXT NOT NULL,
+                shortcut_name TEXT NOT NULL,
+                target_file_id TEXT NOT NULL,
+                target_file_name TEXT,
+                watched_folder_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(shortcut_id, target_file_id)
+            )
+        """
+        )
+
         # Create indexes
         cursor.execute(
             """
@@ -1216,6 +1232,90 @@ class Database:
         conn.close()
 
         return [dict(w) for w in webhooks]
+
+    # ===== SHORTCUT TARGET TRACKING =====
+
+    def save_shortcut_target(self, shortcut_id, shortcut_name, target_file_id, target_file_name, watched_folder_id):
+        """Save a shortcut and its target file for tracking"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO shortcut_targets 
+            (shortcut_id, shortcut_name, target_file_id, target_file_name, watched_folder_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (shortcut_id, target_file_id) 
+            DO UPDATE SET shortcut_name = EXCLUDED.shortcut_name,
+                         target_file_name = EXCLUDED.target_file_name
+            RETURNING id
+        """,
+            (shortcut_id, shortcut_name, target_file_id, target_file_name, watched_folder_id),
+        )
+
+        target_id = cursor.fetchone()[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return target_id
+
+    def get_shortcut_targets_for_folder(self, watched_folder_id):
+        """Get all shortcut targets being watched for a folder"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT shortcut_id, shortcut_name, target_file_id, target_file_name
+            FROM shortcut_targets 
+            WHERE watched_folder_id = %s
+        """,
+            (watched_folder_id,),
+        )
+
+        targets = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(t) for t in targets]
+
+    def get_shortcut_by_target(self, target_file_id):
+        """Get shortcut info by target file ID"""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        cursor.execute(
+            """
+            SELECT shortcut_id, shortcut_name, target_file_id, target_file_name, watched_folder_id
+            FROM shortcut_targets 
+            WHERE target_file_id = %s
+            LIMIT 1
+        """,
+            (target_file_id,),
+        )
+
+        shortcut = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return dict(shortcut) if shortcut else None
+
+    def remove_shortcut_target(self, shortcut_id):
+        """Remove a shortcut target from tracking"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM shortcut_targets WHERE shortcut_id = %s
+        """,
+            (shortcut_id,),
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
 
     # ===== STATISTICS =====
 

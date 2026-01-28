@@ -212,6 +212,18 @@ def process_drive_changes(channel_id):
                         'name': file_name,
                         'mimeType': mime_type
                     })
+                else:
+                    # Check if this is a tracked shortcut target file
+                    shortcut_info = db.get_shortcut_by_target(file_id)
+                    if shortcut_info and shortcut_info['watched_folder_id'] == folder_id:
+                        logger.info(f"Detected change to shortcut target: {file_name} (target of {shortcut_info['shortcut_name']})")
+                        files_to_sync.append({
+                            'id': file_id,
+                            'name': file_name,
+                            'mimeType': mime_type,
+                            '_is_shortcut_target': True,
+                            '_shortcut_name': shortcut_info['shortcut_name']
+                        })
 
         if files_to_sync:
             # Sync the changed files
@@ -253,6 +265,19 @@ def sync_changed_files(files, folder, sync_user_id):
 
         for file in files:
             try:
+                # Track shortcut targets for watching
+                if file.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                    shortcut_info = file.get('_shortcut_info')
+                    if shortcut_info:
+                        db.save_shortcut_target(
+                            shortcut_id=file['id'],
+                            shortcut_name=file['name'],
+                            target_file_id=shortcut_info['target_id'],
+                            target_file_name=shortcut_info.get('target_name', ''),
+                            watched_folder_id=folder['drive_folder_id']
+                        )
+                        logger.info(f"Tracking shortcut target: {shortcut_info['target_id']} for shortcut {file['name']}")
+                
                 # Get file content
                 file_content = drive_sync_instance.get_file_content(file)
                 

@@ -434,27 +434,32 @@ Text to parse:
 
     async def helprelief(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show relief member help"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
 
-        if not user:
-            await update.message.reply_text(
-                "You're not registered. Use /start to begin."
-            )
-            return
+            if not user:
+                await update.message.reply_text(
+                    "You're not registered. Use /start to begin."
+                )
+                return
 
-        # Show help to all users, but indicate if they don't have access
-        has_access = user["role"] in ["relief_member", "admin", "superadmin"]
-        
-        if not has_access:
-            help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
-            help_text += "❌ *You don't have access to these commands.*\n\n"
-            help_text += "These commands are available to:\n"
-            help_text += "• relief_member\n"
-            help_text += "• admin\n"
-            help_text += "• superadmin\n\n"
-            help_text += "Use /help to see commands available to your role."
-            await update.message.reply_text(help_text, parse_mode="Markdown")
+            # Show help to all users, but indicate if they don't have access
+            has_access = user["role"] in ["relief_member", "admin", "superadmin"]
+            
+            if not has_access:
+                help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
+                help_text += "❌ *You don't have access to these commands.*\n\n"
+                help_text += "These commands are available to:\n"
+                help_text += "• relief_member\n"
+                help_text += "• admin\n"
+                help_text += "• superadmin\n\n"
+                help_text += "Use /help to see commands available to your role."
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+                return
+        except Exception as e:
+            logger.error(f"Error in helprelief: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Error: {str(e)}")
             return
 
         help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
@@ -479,26 +484,31 @@ Text to parse:
 
     async def helpadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show admin help - for admins and superadmins"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
 
-        if not user:
-            await update.message.reply_text(
-                "You're not registered. Use /start to begin."
-            )
-            return
+            if not user:
+                await update.message.reply_text(
+                    "You're not registered. Use /start to begin."
+                )
+                return
 
-        # Show help to all users, but indicate if they don't have access
-        has_access = user["role"] in ["admin", "superadmin"]
-        
-        if not has_access:
-            help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
-            help_text += "❌ *You don't have access to these commands.*\n\n"
-            help_text += "These commands are available to:\n"
-            help_text += "• admin\n"
-            help_text += "• superadmin\n\n"
-            help_text += "Use /help to see commands available to your role."
-            await update.message.reply_text(help_text, parse_mode="Markdown")
+            # Show help to all users, but indicate if they don't have access
+            has_access = user["role"] in ["admin", "superadmin"]
+            
+            if not has_access:
+                help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
+                help_text += "❌ *You don't have access to these commands.*\n\n"
+                help_text += "These commands are available to:\n"
+                help_text += "• admin\n"
+                help_text += "• superadmin\n\n"
+                help_text += "Use /help to see commands available to your role."
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+                return
+        except Exception as e:
+            logger.error(f"Error in helpadmin: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Error: {str(e)}")
             return
 
         help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
@@ -542,27 +552,32 @@ Text to parse:
 
     async def helpsuper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show super admin help"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        
-        if not user:
-            await update.message.reply_text(
-                "You're not registered. Use /start to begin."
-            )
-            return
-        
-        # Check if user is a protected superadmin from config
-        is_protected_superadmin = user_id in SUPER_ADMIN_IDS
-        is_superadmin_role = user["role"] == "superadmin"
-        
-        if not (is_protected_superadmin or is_superadmin_role):
-            help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
-            help_text += "❌ *You don't have access to these commands.*\n\n"
-            help_text += "These commands are available to:\n"
-            help_text += "• Protected super admins (from config)\n"
-            help_text += "• Users with superadmin role\n\n"
-            help_text += "Use /help to see commands available to your role."
-            await update.message.reply_text(help_text, parse_mode="Markdown")
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
+            
+            if not user:
+                await update.message.reply_text(
+                    "You're not registered. Use /start to begin."
+                )
+                return
+            
+            # Check if user is a protected superadmin from config
+            is_protected_superadmin = user_id in SUPER_ADMIN_IDS
+            is_superadmin_role = user["role"] == "superadmin"
+            
+            if not (is_protected_superadmin or is_superadmin_role):
+                help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
+                help_text += "❌ *You don't have access to these commands.*\n\n"
+                help_text += "These commands are available to:\n"
+                help_text += "• Protected super admins (from config)\n"
+                help_text += "• Users with superadmin role\n\n"
+                help_text += "Use /help to see commands available to your role."
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+                return
+        except Exception as e:
+            logger.error(f"Error in helpsuper: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Error: {str(e)}")
             return
 
         help_text = "👑 *SUPER ADMIN HELP - SYSTEM COMMANDS*\n\n"
@@ -3088,8 +3103,18 @@ Provide a summary of the main points:"""
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Log errors"""
-        logger.error(f"Exception while handling an update: {context.error}")
+        error = context.error
+        logger.error(f"Exception while handling an update: {error}", exc_info=error)
         logger.error(f"Update that caused error: {update}")
+        
+        # Try to send error message to user if possible
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "❌ An error occurred. Please try again or contact an admin."
+                )
+            except:
+                pass
 
     def run(self):
         """Start the bot"""

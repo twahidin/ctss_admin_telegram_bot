@@ -1756,101 +1756,114 @@ Text to parse:
             )
             return
         
-        # Check if webhook already exists
-        existing_webhook = db.get_webhook_by_folder(GOOGLE_DRIVE_ROOT_FOLDER_ID)
-        if existing_webhook:
-            from datetime import datetime
-            expires_at = existing_webhook.get('expires_at')
-            if expires_at:
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                time_remaining = (expires_at - datetime.now()).total_seconds() / 3600
-                if time_remaining > 0:
-                    await update.message.reply_text(
-                        f"ℹ️ *Webhook Already Registered*\n\n"
-                        f"*Channel ID:* `{existing_webhook['channel_id'][:16]}...`\n"
-                        f"*Status:* Active\n"
-                        f"*Expires in:* {int(time_remaining/24)} days\n\n"
-                        f"Use `/webhookstatus` to check details.\n"
-                        f"To re-register, the current webhook must expire first.",
-                        parse_mode="Markdown"
-                    )
-                    return
+        # If root webhook already exists and not expired, we'll still add subfolder webhooks below
+        existing_root = db.get_webhook_by_folder(GOOGLE_DRIVE_ROOT_FOLDER_ID)
         
-        await update.message.reply_text("🔄 Registering webhook for auto-sync...")
+        await update.message.reply_text("🔄 Registering webhooks for auto-sync (root + all subfolders)...")
         
         try:
-            # Register webhook for root folder
-            result = self.drive_sync.register_webhook(WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID)
+            from datetime import datetime
+            changes_result = self.drive_sync.get_changes()
+            page_token = changes_result.get('newStartPageToken')
+            registered_count = 0
+            failed_folders = []
+            result = None
             
-            # Check if result contains an error
+            # 1. Register webhook for root folder (unless already active)
+            if not existing_root:
+                result = self.drive_sync.register_webhook(WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID)
+            else:
+                result = None  # Skip root registration; we'll use existing_root for message
+                registered_count += 1
+            
             if result and 'error' in result:
                 error_msg = result.get('error', 'Unknown error')
                 error_details = result.get('details', '')
-                
-                error_message = f"❌ *Webhook Registration Failed*\n\n"
-                error_message += f"*Error:* {error_msg}\n\n"
-                
+                error_message = f"❌ *Webhook Registration Failed*\n\n*Error:* {error_msg}\n\n"
                 if 'notFound' in error_msg.lower() or '404' in str(error_details):
                     error_message += "The Google Drive folder ID may be incorrect.\n"
-                    error_message += f"Current folder ID: `{GOOGLE_DRIVE_ROOT_FOLDER_ID}`\n\n"
                 elif 'forbidden' in error_msg.lower() or '403' in str(error_details):
                     error_message += "Permission denied. Check service account permissions.\n"
-                    error_message += "Ensure the service account has access to the folder.\n\n"
                 elif 'invalid' in error_msg.lower() or '400' in str(error_details):
                     error_message += "Invalid webhook URL or request.\n"
-                    error_message += f"URL: `{WEBHOOK_URL}`\n\n"
-                
                 error_message += "Check Railway logs for more details."
-                
                 await update.message.reply_text(error_message, parse_mode="Markdown")
                 logger.error(f"Webhook registration failed: {error_msg} - {error_details}")
                 return
             
-            if result and result.get('id'):
-                channel_id = result.get('id')
-                resource_id = result.get('resourceId')
-                expiration = result.get('expiration')
-                
-                # Get initial page token
-                changes_result = self.drive_sync.get_changes()
-                page_token = changes_result.get('newStartPageToken')
-                
-                # Save to database
-                from datetime import datetime
-                expires_at = None
-                if expiration:
-                    expires_at = datetime.fromtimestamp(int(expiration) / 1000)
-                
+            if not existing_root:
+                if not result or not result.get('id'):
+                    await update.message.reply_text(
+                        "❌ *Failed to register webhook*\n\nNo response from Google Drive API. Check Railway logs.",
+                        parse_mode="Markdown"
+                    )
+                    return
+                expires_at = datetime.fromtimestamp(int(result['expiration']) / 1000) if result.get('expiration') else None
                 db.save_webhook(
                     folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID,
-                    channel_id=channel_id,
-                    resource_id=resource_id,
+                    channel_id=result['id'],
+                    resource_id=result.get('resourceId'),
                     webhook_url=WEBHOOK_URL,
                     page_token=page_token,
                     expires_at=expires_at
                 )
-                
-                await update.message.reply_text(
-                    f"✅ *Webhook Registered!*\n\n"
-                    f"*Channel ID:* `{channel_id}`\n"
-                    f"*Status:* Active\n"
-                    f"*Auto-sync:* Enabled\n\n"
-                    f"Google Docs, Sheets, PDFs, and images will sync automatically when modified or uploaded in any folder under the root.\n"
-                    f"Webhook expires: {expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'Never'}",
-                    parse_mode="Markdown"
-                )
+                registered_count += 1
+                logger.info("Registered webhook for root folder")
             else:
-                await update.message.reply_text(
-                    "❌ *Failed to register webhook*\n\n"
-                    "No response from Google Drive API.\n"
-                    "Possible causes:\n"
-                    "• Service account lacks permissions\n"
-                    "• Invalid folder ID\n"
-                    "• Network/API error\n\n"
-                    "Check Railway logs for details."
-                )
-                
+                expires_at = existing_root.get('expires_at')
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00')) if expires_at else None
+            
+            # 2. Register a watch for each subfolder (Drive only notifies for direct folder contents, not nested)
+            subfolders = self.drive_sync.list_folders(GOOGLE_DRIVE_ROOT_FOLDER_ID)
+            for sub in subfolders:
+                sub_id = sub['id']
+                sub_name = sub['name']
+                if db.get_webhook_by_folder(sub_id):
+                    logger.debug(f"Webhook already exists for {sub_name}, skipping")
+                    continue
+                res = self.drive_sync.register_webhook(WEBHOOK_URL, sub_id)
+                if res and 'error' in res:
+                    logger.warning(f"Could not register webhook for {sub_name}: {res.get('error')}")
+                    failed_folders.append(sub_name)
+                    continue
+                if res and res.get('id'):
+                    db.add_or_update_drive_folder(
+                        folder_name=sub_name,
+                        drive_folder_id=sub_id,
+                        parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
+                    )
+                    exp = datetime.fromtimestamp(int(res['expiration']) / 1000) if res.get('expiration') else None
+                    db.save_webhook(
+                        folder_id=sub_id,
+                        channel_id=res['id'],
+                        resource_id=res.get('resourceId'),
+                        webhook_url=WEBHOOK_URL,
+                        page_token=page_token,
+                        expires_at=exp
+                    )
+                    registered_count += 1
+                    logger.info(f"Registered webhook for subfolder: {sub_name}")
+            
+            # For success message expiry: use result if we just registered root, else existing_root
+            expires_at = None
+            if result and result.get('expiration'):
+                expires_at = datetime.fromtimestamp(int(result['expiration']) / 1000)
+            elif existing_root and existing_root.get('expires_at'):
+                expires_at = existing_root['expires_at']
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+            
+            msg = (
+                f"✅ *Webhooks registered*\n\n"
+                f"*Watching:* Root + {len(subfolders)} subfolder(s) ({registered_count} channels)\n"
+                f"Google Docs, Sheets, PDFs, and images will auto-sync when modified or uploaded in any of these folders.\n"
+                f"*Expires:* {expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'Never'}\n\n"
+            )
+            if failed_folders:
+                msg += f"⚠️ Failed for: {', '.join(failed_folders)}\n"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
         except Exception as e:
             logger.error(f"Error registering webhook: {e}", exc_info=True)
             await update.message.reply_text(

@@ -254,8 +254,13 @@ class DriveSync:
             return result
 
         except HttpError as error:
-            logger.error(f"Error registering webhook: {error}")
-            return None
+            error_details = error.error_details if hasattr(error, 'error_details') else str(error)
+            error_reason = error.reason if hasattr(error, 'reason') else 'Unknown'
+            logger.error(f"Error registering webhook: {error_reason} - {error_details}")
+            return {'error': error_reason, 'details': error_details}
+        except Exception as error:
+            logger.error(f"Unexpected error registering webhook: {error}", exc_info=True)
+            return {'error': str(error)}
 
     def stop_webhook(self, channel_id: str, resource_id: str):
         """Stop a webhook channel"""

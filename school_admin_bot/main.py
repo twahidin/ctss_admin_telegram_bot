@@ -1648,7 +1648,31 @@ Text to parse:
             # Register webhook for root folder
             result = self.drive_sync.register_webhook(WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID)
             
-            if result:
+            # Check if result contains an error
+            if result and 'error' in result:
+                error_msg = result.get('error', 'Unknown error')
+                error_details = result.get('details', '')
+                
+                error_message = f"❌ *Webhook Registration Failed*\n\n"
+                error_message += f"*Error:* {error_msg}\n\n"
+                
+                if 'notFound' in error_msg.lower() or '404' in str(error_details):
+                    error_message += "The Google Drive folder ID may be incorrect.\n"
+                    error_message += f"Current folder ID: `{GOOGLE_DRIVE_ROOT_FOLDER_ID}`\n\n"
+                elif 'forbidden' in error_msg.lower() or '403' in str(error_details):
+                    error_message += "Permission denied. Check service account permissions.\n"
+                    error_message += "Ensure the service account has access to the folder.\n\n"
+                elif 'invalid' in error_msg.lower() or '400' in str(error_details):
+                    error_message += "Invalid webhook URL or request.\n"
+                    error_message += f"URL: `{WEBHOOK_URL}`\n\n"
+                
+                error_message += "Check Railway logs for more details."
+                
+                await update.message.reply_text(error_message, parse_mode="Markdown")
+                logger.error(f"Webhook registration failed: {error_msg} - {error_details}")
+                return
+            
+            if result and result.get('id'):
                 channel_id = result.get('id')
                 resource_id = result.get('resourceId')
                 expiration = result.get('expiration')
@@ -1683,13 +1707,22 @@ Text to parse:
                 )
             else:
                 await update.message.reply_text(
-                    "❌ Failed to register webhook. Check logs for details."
+                    "❌ *Failed to register webhook*\n\n"
+                    "No response from Google Drive API.\n"
+                    "Possible causes:\n"
+                    "• Service account lacks permissions\n"
+                    "• Invalid folder ID\n"
+                    "• Network/API error\n\n"
+                    "Check Railway logs for details."
                 )
                 
         except Exception as e:
             logger.error(f"Error registering webhook: {e}", exc_info=True)
             await update.message.reply_text(
-                f"❌ Error registering webhook: {str(e)}"
+                f"❌ *Unexpected Error*\n\n"
+                f"Error: `{str(e)}`\n\n"
+                f"Check Railway logs for full details.",
+                parse_mode="Markdown"
             )
 
     async def webhook_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

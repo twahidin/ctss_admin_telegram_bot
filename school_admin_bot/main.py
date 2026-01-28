@@ -6,6 +6,7 @@ import base64
 import logging
 from datetime import datetime, time, timedelta
 import fitz  # PyMuPDF for PDF processing
+from psycopg.rows import dict_row
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,

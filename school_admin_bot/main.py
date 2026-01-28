@@ -1813,18 +1813,28 @@ Text to parse:
             return
         
         # Get original role (before any assumption)
-        original_user = db.get_user(user_id)
-        if not original_user:
-            await update.message.reply_text("❌ User not found in database.")
-            return
-        
-        # Get true original role (not assumed)
-        if original_user.get('is_assumed'):
-            # Already assuming a role, get the stored original
-            assumption = db.get_role_assumption(user_id)
-            original_role = assumption['original_role'] if assumption else original_user.get('original_role', 'superadmin')
+        # First check if there's already an assumption
+        existing_assumption = db.get_role_assumption(user_id)
+        if existing_assumption:
+            # Already assuming a role, use the stored original
+            original_role = existing_assumption['original_role']
         else:
-            original_role = original_user['role']
+            # No assumption yet, get from user table
+            user = db.get_user(user_id)
+            if not user:
+                await update.message.reply_text("❌ User not found in database.")
+                return
+            # Get the actual role from database (not the effective role)
+            conn = db.get_connection()
+            cursor = conn.cursor(row_factory=dict_row)
+            cursor.execute(
+                "SELECT role FROM users WHERE telegram_id = %s",
+                (user_id,)
+            )
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            original_role = user_row['role'] if user_row else 'superadmin'
         
         # Store assumption
         db.assume_role(user_id, role_to_assume, original_role)
@@ -1856,7 +1866,20 @@ Text to parse:
             return
         
         original_role = assumption['original_role']
-        is_superadmin_role = original_role == 'superadmin'
+        
+        # Verify user is actually a superadmin (check database role, not assumed)
+        conn = db.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+        cursor.execute(
+            "SELECT role FROM users WHERE telegram_id = %s",
+            (user_id,)
+        )
+        user_row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        actual_role = user_row['role'] if user_row else None
+        is_superadmin_role = actual_role == 'superadmin'
         
         if not (is_protected_superadmin or is_superadmin_role):
             await update.message.reply_text(

@@ -443,10 +443,18 @@ Text to parse:
             )
             return
 
-        if user["role"] not in ["relief_member", "admin", "superadmin"]:
-            await update.message.reply_text(
-                "❌ This command is for relief members and admins only."
-            )
+        # Show help to all users, but indicate if they don't have access
+        has_access = user["role"] in ["relief_member", "admin", "superadmin"]
+        
+        if not has_access:
+            help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
+            help_text += "❌ *You don't have access to these commands.*\n\n"
+            help_text += "These commands are available to:\n"
+            help_text += "• relief_member\n"
+            help_text += "• admin\n"
+            help_text += "• superadmin\n\n"
+            help_text += "Use /help to see commands available to your role."
+            await update.message.reply_text(help_text, parse_mode="Markdown")
             return
 
         help_text = "🔄 *RELIEF HELP - RELIEF MANAGEMENT*\n\n"
@@ -474,8 +482,23 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["admin", "superadmin"]:
-            await update.message.reply_text("❌ This command is for admins only.")
+        if not user:
+            await update.message.reply_text(
+                "You're not registered. Use /start to begin."
+            )
+            return
+
+        # Show help to all users, but indicate if they don't have access
+        has_access = user["role"] in ["admin", "superadmin"]
+        
+        if not has_access:
+            help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
+            help_text += "❌ *You don't have access to these commands.*\n\n"
+            help_text += "These commands are available to:\n"
+            help_text += "• admin\n"
+            help_text += "• superadmin\n\n"
+            help_text += "Use /help to see commands available to your role."
+            await update.message.reply_text(help_text, parse_mode="Markdown")
             return
 
         help_text = "🔧 *ADMIN HELP - MANAGEMENT COMMANDS*\n\n"
@@ -544,7 +567,7 @@ Text to parse:
         help_text += "/purge - Manually trigger data purge (usually runs at 11 PM)\n\n"
         help_text += "*Other Commands:*\n"
         help_text += "/help - View general help commands\n"
-        help_text += "/relief_help - View relief management commands\n"
+        help_text += "/helprelief - View relief management commands\n"
         help_text += "/helpadmin - View admin management commands\n\n"
         help_text += "⚠️ Your account (ID: {}) is protected and cannot be removed.".format(user_id)
 

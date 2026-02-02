@@ -30,6 +30,7 @@ TAGS = [
     "EVENT",
     "VENUE_CHANGE",
     "DUTY_ROSTER",
+    "STUDENT_MOVEMENT",
     "GENERAL",
 ]
 
@@ -70,11 +71,17 @@ REMINDER_MINUTES_BEFORE = 5
 # Google Drive Integration
 GOOGLE_DRIVE_ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-DRIVE_SYNC_HOUR = int(os.getenv("DRIVE_SYNC_HOUR", "6"))  # Default 6 AM
 
-# Webhook Configuration
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")  # Public URL for webhook endpoint (e.g., https://your-bot.railway.app/webhook/drive)
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  # Secret token for webhook verification
+# Daily sync schedule per folder: folder_name -> (hour, minute) Singapore time
+# Relief Committee: 6 pm, Relief Timetable / Weekly Bulletin: 7:45 am
+# Today's Event: 7 am - only PDFs named dd_mm_yy_eventname.pdf where date matches today
+# Note: Student Movement is uploaded via Telegram only - no Drive sync
+SYNC_SCHEDULE = {
+    "Relief Committee": (18, 0),   # 6:00 PM
+    "Relief Timetable": (7, 45),   # 7:45 AM
+    "Weekly Bulletin": (7, 45),    # 7:45 AM
+    "Today's Event": (7, 0),       # 7:00 AM - events dropped night before or by 7 am
+}
 
 # Validate required environment variables
 if not TELEGRAM_TOKEN:

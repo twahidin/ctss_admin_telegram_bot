@@ -588,6 +588,83 @@ class Database:
 
         return deleted_count
 
+    def delete_student_movement_entries_today(self):
+        """Delete all Student Movement entries for today (tag or folder)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            DELETE FROM daily_entries 
+            WHERE date = %s AND (
+                tag = %s
+                OR content->>'folder' ILIKE %s
+            )
+        """,
+            (today, "STUDENT_MOVEMENT", "%Student Movement%"),
+        )
+
+        deleted_count = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return deleted_count
+
+    def get_student_movement_entries_today(self):
+        """Get all Student Movement entries for today."""
+        conn = self.get_connection()
+        cursor = conn.cursor(row_factory=dict_row)
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            SELECT id, tag, content, uploaded_by, drive_file_id,
+                   TO_CHAR(timestamp, 'HH24:MI') as timestamp
+            FROM daily_entries 
+            WHERE date = %s AND (
+                tag = %s
+                OR content->>'folder' ILIKE %s
+            )
+            ORDER BY timestamp DESC
+        """,
+            (today, "STUDENT_MOVEMENT", "%Student Movement%"),
+        )
+
+        entries = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return [dict(e) for e in entries]
+
+    def delete_student_movement_entry_by_id(self, entry_id):
+        """Delete a single Student Movement entry by ID (for student_admin). Returns True if deleted."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        today = date.today()
+
+        cursor.execute(
+            """
+            DELETE FROM daily_entries 
+            WHERE id = %s AND date = %s AND (
+                tag = %s
+                OR content->>'folder' ILIKE %s
+            )
+        """,
+            (entry_id, today, "STUDENT_MOVEMENT", "%Student Movement%"),
+        )
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return deleted
+
     def purge_old_data(self):
         """Delete entries older than today and generate new code"""
         conn = self.get_connection()
@@ -1550,6 +1627,7 @@ class Database:
             "superadmins": role_counts.get("superadmin", 0),
             "admin": role_counts.get("admin", 0),
             "relief_member": role_counts.get("relief_member", 0),
+            "student_admin": role_counts.get("student_admin", 0),
             "viewers": role_counts.get("viewer", 0),
             "today_entries": today_count,
         }

@@ -44,7 +44,7 @@ from config import (
     PERIOD_TIMES,
     REMINDER_MINUTES_BEFORE,
     GOOGLE_DRIVE_ROOT_FOLDER_ID,
-    DRIVE_SYNC_HOUR,
+    SYNC_SCHEDULE,
 )
 
 # Enable logging
@@ -436,7 +436,11 @@ Text to parse:
         help_text += "/today - View all categories and entry counts for today\n\n"
 
         # Show role-specific help links
-        if role == "relief_member":
+        if role == "student_admin":
+            help_text += "*Student Movement Admin:*\n"
+            help_text += "/upload - Upload Student Movement information\n"
+            help_text += "  • Use Remove menu to clear all Student Movement for today\n"
+        elif role == "relief_member":
             help_text += "*Additional Help:*\n"
             help_text += "/helprelief - Relief member specific commands\n"
         elif role in ["admin", "superadmin"]:
@@ -544,7 +548,7 @@ Text to parse:
             help_text += "  • Example: /add 123456789 John Teacher\n"
             help_text += "/remove [user_id] - Remove a user from the system\n"
             help_text += "/promote [user_id] [role] - Change a user's role\n"
-            help_text += "  • Roles: viewer, relief\\_member, admin\n"
+            help_text += "  • Roles: viewer, relief\\_member, admin, student\\_admin\n"
             help_text += "  • Example: /promote 123456789 relief\\_member\n"
             help_text += "/list - Show all registered users and their roles\n\n"
             
@@ -614,7 +618,7 @@ Text to parse:
             help_text += "*User Management:*\n"
             help_text += "/massupload - Upload CSV file to replace all users\n"
             help_text += "  • CSV format: telegram_id,name,role\n"
-            help_text += "  • Roles: viewer, relief\\_member, admin\n"
+            help_text += "  • Roles: viewer, relief\\_member, admin, student\\_admin\n"
             help_text += "  • This replaces all users except protected super admins\n"
             help_text += "/addsuperadmin [user_id] - Add a new super admin\n"
             help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
@@ -624,12 +628,10 @@ Text to parse:
             help_text += "  • Example: /setfolder Relief Timetable admin,relief\\_member\n"
             help_text += "  • Available roles: viewer, relief\\_member, admin, superadmin\n"
             help_text += "/listfolders - View all folders and their access configuration\n"
-            help_text += "/registerwebhook - Register webhook for auto-sync on file changes\n"
-            help_text += "  • Requires WEBHOOK_URL environment variable\n"
-            help_text += "/webhookstatus - Check webhook status and health\n\n"
+            help_text += "  • Folders sync on schedule (Relief Committee 6pm, others 7:45am)\n\n"
             help_text += "*Testing & Debugging:*\n"
             help_text += "/assume [role] - Assume a different role for testing\n"
-            help_text += "  • Roles: viewer, relief\\_member, admin\n"
+            help_text += "  • Roles: viewer, relief\\_member, admin, student\\_admin\n"
             help_text += "  • Example: /assume viewer\n"
             help_text += "/resume - Resume your original superadmin role\n\n"
             help_text += "*System Management:*\n"
@@ -661,11 +663,12 @@ Text to parse:
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
-        if not user or user["role"] not in ["admin", "superadmin"]:
+        if not user or user["role"] not in ["admin", "superadmin", "student_admin"]:
             await update.message.reply_text("❌ You don't have upload permissions.")
             return ConversationHandler.END
 
-        # Check user's uploads count today
+        # Check user's uploads count today (student_admin sees Student Movement remove option)
+        is_student_admin = user["role"] == "student_admin"
         user_uploads = db.get_user_uploads_today(user_id)
         upload_count = len(user_uploads)
 
@@ -674,8 +677,13 @@ Text to parse:
             [InlineKeyboardButton("📤 Upload New Information", callback_data="upload_new")],
         ]
         
-        # Only show remove options if user has uploads
-        if upload_count > 0:
+        # Remove options: student_admin gets remove one + remove all; others get per-upload remove
+        if is_student_admin:
+            sm_entries = db.get_student_movement_entries_today()
+            if sm_entries:
+                buttons.append([InlineKeyboardButton(f"🗑️ Remove One Student Movement ({len(sm_entries)} total)", callback_data="upload_remove_one_sm")])
+            buttons.append([InlineKeyboardButton("🗑️ Remove All Student Movement", callback_data="upload_remove_student_movement")])
+        elif upload_count > 0:
             buttons.append([InlineKeyboardButton(f"🗑️ Remove One Upload ({upload_count} total)", callback_data="upload_remove_one")])
             buttons.append([InlineKeyboardButton("🗑️ Remove All My Uploads", callback_data="upload_remove_all")])
         
@@ -732,6 +740,61 @@ Text to parse:
                 reply_markup=keyboard,
             )
             return PRIVACY_WARNING
+        
+        elif choice == "upload_remove_one_sm":
+            # student_admin: show list of Student Movement entries to remove one
+            sm_entries = db.get_student_movement_entries_today()
+            if not sm_entries:
+                await query.edit_message_text("📭 No Student Movement entries to remove.")
+                context.user_data.clear()
+                return ConversationHandler.END
+            
+            context.user_data["delete_mode"] = "student_movement"
+            buttons = []
+            for entry in sm_entries:
+                entry_id = entry["id"]
+                tag = entry["tag"]
+                timestamp = entry["timestamp"]
+                content = entry.get("content", {})
+                if isinstance(content, str):
+                    try:
+                        content = json.loads(content)
+                    except:
+                        content = {}
+                content_type = content.get("type", "document") if isinstance(content, dict) else "document"
+                label = f"🗑️ [{tag}] {content_type} @ {timestamp}"
+                buttons.append([InlineKeyboardButton(label, callback_data=f"delete_entry_{entry_id}")])
+            buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="delete_cancel")])
+            keyboard = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(
+                "🗑️ *SELECT STUDENT MOVEMENT ENTRY TO REMOVE*\n\n"
+                "Choose which entry to delete:",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return SELECTING_UPLOAD_TO_DELETE
+        
+        elif choice == "upload_remove_student_movement":
+            # student_admin only: remove all Student Movement entries
+            buttons = [
+                [InlineKeyboardButton("✅ Yes, Remove All Student Movement", callback_data="confirm_remove_student_movement")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_remove_all")],
+            ]
+            keyboard = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(
+                "⚠️ *CONFIRM DELETION*\n\n"
+                "Are you sure you want to remove *ALL* Student Movement information for today?\n\n"
+                "This action cannot be undone.",
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+            return UPLOAD_MENU
+        
+        elif choice == "confirm_remove_student_movement":
+            deleted_count = db.delete_student_movement_entries_today()
+            await query.edit_message_text(f"✅ Removed *{deleted_count}* Student Movement entry/entries.", parse_mode="Markdown")
+            context.user_data.clear()
+            return ConversationHandler.END
         
         elif choice == "upload_remove_one":
             # Show list of user's uploads to select from
@@ -810,8 +873,14 @@ Text to parse:
             return ConversationHandler.END
         
         elif choice == "privacy_agree":
-            # Proceed to tag selection
-            tag_buttons = [[f"{i+1}️⃣ {tag}"] for i, tag in enumerate(TAGS)]
+            # Proceed to tag selection (student_admin only sees STUDENT_MOVEMENT)
+            user = db.get_user(query.from_user.id)
+            is_student_admin = user and user.get("role") == "student_admin"
+            if is_student_admin:
+                tags_for_user = ["STUDENT_MOVEMENT"]
+            else:
+                tags_for_user = TAGS
+            tag_buttons = [[f"{i+1}️⃣ {tag}"] for i, tag in enumerate(tags_for_user)]
             tag_buttons.append(["❌ Cancel"])
             reply_markup = ReplyKeyboardMarkup(tag_buttons, one_time_keyboard=True)
             
@@ -864,11 +933,15 @@ Text to parse:
         elif choice == "confirm_delete_single":
             entry_id = context.user_data.get("pending_delete_id")
             if entry_id:
-                deleted = db.delete_entry_by_id(entry_id, user_id)
-                if deleted:
-                    await query.edit_message_text("✅ Upload deleted successfully.")
+                is_student_movement_delete = context.user_data.get("delete_mode") == "student_movement"
+                if is_student_movement_delete:
+                    deleted = db.delete_student_movement_entry_by_id(entry_id)
                 else:
-                    await query.edit_message_text("❌ Could not delete upload. It may have already been removed.")
+                    deleted = db.delete_entry_by_id(entry_id, user_id)
+                if deleted:
+                    await query.edit_message_text("✅ Entry deleted successfully.")
+                else:
+                    await query.edit_message_text("❌ Could not delete entry. It may have already been removed.")
             context.user_data.clear()
             return ConversationHandler.END
         
@@ -893,9 +966,12 @@ Text to parse:
             return ConversationHandler.END
         
         try:
+            user = db.get_user(update.effective_user.id)
+            is_student_admin = user and user.get("role") == "student_admin"
+            tags_for_user = ["STUDENT_MOVEMENT"] if is_student_admin else TAGS
             tag_number = int(text.split("️⃣")[0]) - 1
-            if 0 <= tag_number < len(TAGS):
-                selected_tag = TAGS[tag_number]
+            if 0 <= tag_number < len(tags_for_user):
+                selected_tag = tags_for_user[tag_number]
                 context.user_data["selected_tag"] = selected_tag
 
                 await update.message.reply_text(
@@ -913,7 +989,7 @@ Text to parse:
         except (ValueError, IndexError):
             pass
 
-        await update.message.reply_text("❌ Invalid selection. Please choose 1-6 or Cancel.")
+        await update.message.reply_text("❌ Invalid selection. Please choose from the options or Cancel.")
         return SELECTING_TAG
 
     async def content_received(
@@ -996,6 +1072,12 @@ Text to parse:
             content_type = "text"
             extracted_text = text_content
 
+        # student_admin uploads: add folder for Student Movement identification
+        if selected_tag == "STUDENT_MOVEMENT":
+            user = db.get_user(user_id)
+            if user and user.get("role") == "student_admin":
+                content_data["folder"] = "Student Movement"
+        
         # Save to database
         db.add_entry(user_id, selected_tag, content_data)
 
@@ -1362,7 +1444,7 @@ Text to parse:
                 )
                 return
             
-            valid_roles = ["viewer", "relief_member", "admin", "superadmin"]
+            valid_roles = ["viewer", "relief_member", "admin", "student_admin", "superadmin"]
             raw_args = [a.strip('"\'') for a in context.args]
             
             # Parse: folder name may be one or more words; rest are role1,role2,...
@@ -1511,11 +1593,11 @@ Text to parse:
         
         await update.message.reply_text("🔄 Syncing files from Google Drive...")
         
-        # Check role access
+        # Check role access (student_admin syncs Student Movement via Telegram only, not Drive)
         if user["role"] not in ["relief_member", "admin", "superadmin"]:
             await update.message.reply_text(
                 f"❌ Only relief_member, admin, and superadmin can sync Google Drive folders.\n"
-                f"Viewers can only query data that has been synced."
+                f"Viewers and student_admin can only query data."
             )
             return
         
@@ -1545,8 +1627,8 @@ Text to parse:
                 f"💡 Use /setfolder to configure role access if needed."
             )
         
-        # All folders are accessible to relief_member, admin, superadmin
-        accessible_folders = all_folders
+        # All folders except Student Movement (Telegram-only) are synced from Drive
+        accessible_folders = [f for f in all_folders if f['folder_name'] != 'Student Movement']
         
         total_files = 0
         total_processed = 0
@@ -1561,6 +1643,22 @@ Text to parse:
                 
                 # List files in folder
                 files = self.drive_sync.list_files_in_folder(drive_folder_id)
+                
+                # Today's Event: only PDFs named dd_mm_yy_eventname.pdf where date = today
+                if folder_name == "Today's Event" and files:
+                    today = get_singapore_now().date()
+                    filtered = []
+                    for f in files:
+                        is_match, event_name = self._is_todays_event_pdf(f.get('name', ''))
+                        if is_match:
+                            f['_event_name'] = event_name
+                            filtered.append(f)
+                    files = filtered
+                    if not files:
+                        await update.message.reply_text(
+                            f"📂 {folder_name}: No PDFs with today's date ({today.strftime('%d/%m/%Y')}) found. Skipping."
+                        )
+                        continue
                 
                 if not files:
                     continue
@@ -1628,6 +1726,8 @@ Text to parse:
                             "drive_folder_id": drive_folder_id,  # Store for access control
                             "drive_file_id": file.get('id'),  # For upsert
                         }
+                        if folder_name == "Today's Event" and file.get('_event_name'):
+                            content_data["event_name"] = file['_event_name']
                         if content_data.get("drive_file_id"):
                             db.add_or_update_drive_entry(user_id, category, content_data)
                         else:
@@ -1701,182 +1801,11 @@ Text to parse:
             if len(folders) > 10:
                 message += f"... and {len(folders) - 10} more\n"
         
-        # Check webhook status
-        from config import WEBHOOK_URL
-        if WEBHOOK_URL:
-            webhooks = db.get_all_active_webhooks()
-            message += f"\n*Webhooks:* {len(webhooks)} active\n"
-            if webhooks:
-                for w in webhooks[:3]:
-                    message += f"• Channel: {w['channel_id'][:8]}...\n"
-        else:
-            message += "\n*Webhooks:* Not configured\n"
-            message += "Use /registerwebhook to enable auto-sync"
+        message += "\n*Sync Schedule:*\n"
+        for folder_name, (h, m) in SYNC_SCHEDULE.items():
+            message += f"• {folder_name}: {h:02d}:{m:02d} SGT daily\n"
         
         await update.message.reply_text(message, parse_mode="Markdown")
-
-    async def register_webhook(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Register webhook for auto-sync (superadmin only)"""
-        user_id = update.effective_user.id
-        user = db.get_user(user_id)
-        
-        if user_id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text("❌ This command is for protected super admins only.")
-            return
-        
-        if not self.drive_sync:
-            await update.message.reply_text("❌ Google Drive is not configured.")
-            return
-        
-        from config import WEBHOOK_URL
-        
-        if not WEBHOOK_URL:
-            await update.message.reply_text(
-                "❌ *Webhook URL not configured.*\n\n"
-                "Please set `WEBHOOK_URL` environment variable in Railway.\n"
-                "Format: `https://your-bot.railway.app/webhook/drive`\n\n"
-                "After setting, restart the bot and try again.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Validate webhook URL format
-        if not WEBHOOK_URL.endswith('/webhook/drive'):
-            # Auto-fix: append /webhook/drive if missing
-            if WEBHOOK_URL.endswith('/'):
-                corrected_url = WEBHOOK_URL + 'webhook/drive'
-            else:
-                corrected_url = WEBHOOK_URL + '/webhook/drive'
-            
-            await update.message.reply_text(
-                f"⚠️ *Webhook URL format issue*\n\n"
-                f"Your current URL: `{WEBHOOK_URL}`\n\n"
-                f"The webhook URL must end with `/webhook/drive`\n\n"
-                f"Please update `WEBHOOK_URL` in Railway to:\n"
-                f"`{corrected_url}`\n\n"
-                f"Then restart the bot and try again.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # If root webhook already exists and not expired, we'll still add subfolder webhooks below
-        existing_root = db.get_webhook_by_folder(GOOGLE_DRIVE_ROOT_FOLDER_ID)
-        
-        await update.message.reply_text("🔄 Registering webhooks for auto-sync (root + all subfolders)...")
-        
-        try:
-            from datetime import datetime
-            # Use root folder's drive ID if in a shared drive, so we get the correct changelog
-            root_drive_id = self.drive_sync.get_folder_drive_id(GOOGLE_DRIVE_ROOT_FOLDER_ID)
-            changes_result = self.drive_sync.get_changes(None, drive_id=root_drive_id)
-            page_token = changes_result.get('newStartPageToken')
-            registered_count = 0
-            failed_folders = []
-            result = None
-            
-            # 1. Register webhook for root folder (unless already active)
-            if not existing_root:
-                result = self.drive_sync.register_webhook(WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID)
-            else:
-                result = None  # Skip root registration; we'll use existing_root for message
-                registered_count += 1
-            
-            if result and 'error' in result:
-                error_msg = result.get('error', 'Unknown error')
-                error_details = result.get('details', '')
-                error_message = f"❌ *Webhook Registration Failed*\n\n*Error:* {error_msg}\n\n"
-                if 'notFound' in error_msg.lower() or '404' in str(error_details):
-                    error_message += "The Google Drive folder ID may be incorrect.\n"
-                elif 'forbidden' in error_msg.lower() or '403' in str(error_details):
-                    error_message += "Permission denied. Check service account permissions.\n"
-                elif 'invalid' in error_msg.lower() or '400' in str(error_details):
-                    error_message += "Invalid webhook URL or request.\n"
-                error_message += "Check Railway logs for more details."
-                await update.message.reply_text(error_message, parse_mode="Markdown")
-                logger.error(f"Webhook registration failed: {error_msg} - {error_details}")
-                return
-            
-            if not existing_root:
-                if not result or not result.get('id'):
-                    await update.message.reply_text(
-                        "❌ *Failed to register webhook*\n\nNo response from Google Drive API. Check Railway logs.",
-                        parse_mode="Markdown"
-                    )
-                    return
-                expires_at = datetime.fromtimestamp(int(result['expiration']) / 1000) if result.get('expiration') else None
-                db.save_webhook(
-                    folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID,
-                    channel_id=result['id'],
-                    resource_id=result.get('resourceId'),
-                    webhook_url=WEBHOOK_URL,
-                    page_token=page_token,
-                    expires_at=expires_at
-                )
-                registered_count += 1
-                logger.info("Registered webhook for root folder")
-            else:
-                expires_at = existing_root.get('expires_at')
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00')) if expires_at else None
-            
-            # 2. Register a watch for each subfolder (Drive only notifies for direct folder contents, not nested)
-            subfolders = self.drive_sync.list_folders(GOOGLE_DRIVE_ROOT_FOLDER_ID)
-            for sub in subfolders:
-                sub_id = sub['id']
-                sub_name = sub['name']
-                if db.get_webhook_by_folder(sub_id):
-                    logger.debug(f"Webhook already exists for {sub_name}, skipping")
-                    continue
-                res = self.drive_sync.register_webhook(WEBHOOK_URL, sub_id)
-                if res and 'error' in res:
-                    logger.warning(f"Could not register webhook for {sub_name}: {res.get('error')}")
-                    failed_folders.append(sub_name)
-                    continue
-                if res and res.get('id'):
-                    db.add_or_update_drive_folder(
-                        folder_name=sub_name,
-                        drive_folder_id=sub_id,
-                        parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
-                    )
-                    exp = datetime.fromtimestamp(int(res['expiration']) / 1000) if res.get('expiration') else None
-                    db.save_webhook(
-                        folder_id=sub_id,
-                        channel_id=res['id'],
-                        resource_id=res.get('resourceId'),
-                        webhook_url=WEBHOOK_URL,
-                        page_token=page_token,
-                        expires_at=exp
-                    )
-                    registered_count += 1
-                    logger.info(f"Registered webhook for subfolder: {sub_name}")
-            
-            # For success message expiry: use result if we just registered root, else existing_root
-            expires_at = None
-            if result and result.get('expiration'):
-                expires_at = datetime.fromtimestamp(int(result['expiration']) / 1000)
-            elif existing_root and existing_root.get('expires_at'):
-                expires_at = existing_root['expires_at']
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-            
-            msg = (
-                f"✅ *Webhooks registered*\n\n"
-                f"*Watching:* Root + {len(subfolders)} subfolder(s) ({registered_count} channels)\n"
-                f"Google Docs, Sheets, PDFs, and images will auto-sync when modified or uploaded in any of these folders.\n"
-                f"*Expires:* {expires_at.strftime('%Y-%m-%d %H:%M') if expires_at else 'Never'}\n\n"
-            )
-            if failed_folders:
-                msg += f"⚠️ Failed for: {', '.join(failed_folders)}\n"
-            await update.message.reply_text(msg, parse_mode="Markdown")
-
-        except Exception as e:
-            logger.error(f"Error registering webhook: {e}", exc_info=True)
-            await update.message.reply_text(
-                f"❌ *Unexpected Error*\n\n"
-                f"Error: `{str(e)}`\n\n"
-                f"Check Railway logs for full details.",
-                parse_mode="Markdown"
-            )
 
     async def assume_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Assume a different role for testing (superadmin only)"""
@@ -1911,14 +1840,15 @@ Text to parse:
                 "Available roles:\n"
                 "• `viewer`\n"
                 "• `relief_member`\n"
-                "• `admin`\n\n"
+                "• `admin`\n"
+                "• `student_admin`\n\n"
                 "Example: `/assume viewer`",
                 parse_mode="Markdown"
             )
             return
         
         role_to_assume = context.args[0].lower()
-        valid_roles = ['viewer', 'relief_member', 'admin']
+        valid_roles = ['viewer', 'relief_member', 'admin', 'student_admin']
         
         if role_to_assume not in valid_roles:
             await update.message.reply_text(
@@ -2012,197 +1942,6 @@ Text to parse:
             f"You now have your original superadmin permissions back.",
             parse_mode="Markdown"
         )
-
-    async def webhook_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Check webhook status and health (superadmin only)"""
-        user_id = update.effective_user.id
-        
-        if user_id not in SUPER_ADMIN_IDS:
-            await update.message.reply_text("❌ This command is for protected super admins only.")
-            return
-        
-        if not self.drive_sync:
-            await update.message.reply_text("❌ Google Drive is not configured.")
-            return
-        
-        from config import WEBHOOK_URL
-        from datetime import datetime
-        
-        if not WEBHOOK_URL:
-            await update.message.reply_text(
-                "❌ *Webhook not configured*\n\n"
-                "Please set `WEBHOOK_URL` environment variable.\n"
-                "Format: `https://your-bot.railway.app/webhook/drive`",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Check URL format
-        if not WEBHOOK_URL.endswith('/webhook/drive'):
-            if WEBHOOK_URL.endswith('/'):
-                suggested_url = WEBHOOK_URL + 'webhook/drive'
-            else:
-                suggested_url = WEBHOOK_URL + '/webhook/drive'
-            
-            await update.message.reply_text(
-                f"⚠️ *Webhook URL format issue*\n\n"
-                f"Current URL: `{WEBHOOK_URL}`\n\n"
-                f"Must end with `/webhook/drive`\n\n"
-                f"Update to: `{suggested_url}`",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Get all active webhooks
-        webhooks = db.get_all_active_webhooks()
-        
-        if not webhooks:
-            await update.message.reply_text(
-                "⚠️ *No active webhooks*\n\n"
-                "Use `/registerwebhook` to register a webhook.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        message = "📊 *Webhook Status*\n\n"
-        message += f"*Webhook URL:* `{WEBHOOK_URL}`\n\n"
-        
-        now = datetime.now()
-        for webhook in webhooks:
-            expires_at = webhook.get('expires_at')
-            if expires_at:
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                
-                time_until_expiry = expires_at - now
-                hours_remaining = time_until_expiry.total_seconds() / 3600
-                
-                if hours_remaining < 0:
-                    status = "❌ Expired"
-                elif hours_remaining < 24:
-                    status = f"⚠️ Expires in {int(hours_remaining)}h"
-                else:
-                    status = f"✅ Active ({int(hours_remaining/24)}d remaining)"
-            else:
-                status = "✅ Active (no expiry)"
-            
-            message += f"*Channel:* `{webhook['channel_id'][:16]}...`\n"
-            message += f"*Status:* {status}\n"
-            if expires_at:
-                message += f"*Expires:* {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\n"
-            message += f"*Folder ID:* `{webhook['folder_id'][:20]}...`\n\n"
-        
-        # Check recent sync activity
-        from database import Database
-        sync_logs = db.get_today_sync_logs()
-        webhook_syncs = [log for log in sync_logs if log.get('synced_by') is None or log.get('errors', '').find('webhook') != -1]
-        
-        if webhook_syncs:
-            message += f"*Recent webhook syncs today:* {len(webhook_syncs)}\n"
-            latest = webhook_syncs[0]
-            message += f"Last: {latest.get('synced_at', 'N/A')} - {latest.get('files_processed', 0)} files\n"
-        else:
-            message += "*Recent webhook syncs:* None today\n"
-        
-        message += "\n💡 *Tip:* Webhooks auto-renew 24h before expiry"
-        
-        await update.message.reply_text(message, parse_mode="Markdown")
-
-    async def webhook_renewal_job(self, context: ContextTypes.DEFAULT_TYPE):
-        """Auto-renew webhooks that are expiring soon"""
-        try:
-            from config import WEBHOOK_URL, GOOGLE_DRIVE_ROOT_FOLDER_ID
-            from datetime import datetime, timedelta
-            
-            if not WEBHOOK_URL or not self.drive_sync:
-                return
-            
-            # Get all active webhooks
-            webhooks = db.get_all_active_webhooks()
-            now = datetime.now()
-            
-            for webhook in webhooks:
-                expires_at = webhook.get('expires_at')
-                if not expires_at:
-                    continue
-                
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                
-                # Renew if expiring within 24 hours
-                time_until_expiry = expires_at - now
-                hours_remaining = time_until_expiry.total_seconds() / 3600
-                
-                if hours_remaining < 24 and hours_remaining > 0:
-                    logger.info(f"Auto-renewing webhook {webhook['channel_id']} (expires in {int(hours_remaining)}h)")
-                    
-                    try:
-                        # Stop old webhook
-                        if webhook.get('resource_id'):
-                            self.drive_sync.stop_webhook(
-                                webhook['channel_id'],
-                                webhook['resource_id']
-                            )
-                        
-                        # Register new webhook
-                        result = self.drive_sync.register_webhook(
-                            WEBHOOK_URL,
-                            webhook['folder_id']
-                        )
-                        
-                        if result:
-                            channel_id = result.get('id')
-                            resource_id = result.get('resourceId')
-                            expiration = result.get('expiration')
-                            
-                            # Get page token for this folder's drive (shared drive or My Drive)
-                            renew_drive_id = self.drive_sync.get_folder_drive_id(webhook['folder_id'])
-                            changes_result = self.drive_sync.get_changes(None, drive_id=renew_drive_id)
-                            page_token = changes_result.get('newStartPageToken')
-                            
-                            expires_at_new = None
-                            if expiration:
-                                expires_at_new = datetime.fromtimestamp(int(expiration) / 1000)
-                            
-                            # Save new webhook
-                            db.save_webhook(
-                                folder_id=webhook['folder_id'],
-                                channel_id=channel_id,
-                                resource_id=resource_id,
-                                webhook_url=WEBHOOK_URL,
-                                page_token=page_token,
-                                expires_at=expires_at_new
-                            )
-                            
-                            # Deactivate old webhook
-                            db.deactivate_webhook(webhook['channel_id'])
-                            
-                            logger.info(f"Successfully renewed webhook: {channel_id}")
-                            
-                            # Notify superadmins
-                            from config import SUPER_ADMIN_IDS
-                            for admin_id in SUPER_ADMIN_IDS:
-                                try:
-                                    await context.bot.send_message(
-                                        admin_id,
-                                        f"✅ Webhook auto-renewed successfully!\n"
-                                        f"New expiry: {expires_at_new.strftime('%Y-%m-%d %H:%M UTC') if expires_at_new else 'Never'}"
-                                    )
-                                except:
-                                    pass
-                        else:
-                            logger.error(f"Failed to renew webhook {webhook['channel_id']}")
-                            
-                    except Exception as e:
-                        logger.error(f"Error renewing webhook {webhook['channel_id']}: {e}", exc_info=True)
-                
-                elif hours_remaining < 0:
-                    # Expired webhook - deactivate
-                    logger.warning(f"Deactivating expired webhook: {webhook['channel_id']}")
-                    db.deactivate_webhook(webhook['channel_id'])
-                    
-        except Exception as e:
-            logger.error(f"Error in webhook renewal job: {e}", exc_info=True)
 
     async def sync_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show sync status for today"""
@@ -2317,21 +2056,41 @@ Provide a direct, concise answer based only on the information above. If the doc
                 f"Raw entries found: {len(entries)}"
             )
 
+    def _is_student_movement_entry(self, entry):
+        """Check if entry is Student Movement (tag or folder)."""
+        tag = entry.get('tag', '')
+        if tag == 'STUDENT_MOVEMENT':
+            return True
+        content = entry.get('content', {})
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {}
+        folder = content.get('folder', '') if isinstance(content, dict) else ''
+        return folder and 'Student Movement' in folder
+
     def _filter_entries_by_folder_access(self, entries, user_role):
         """
         Filter entries based on folder access rules:
-        - Each entry has a drive_folder_id in content_data
+        - Each entry has a drive_folder_id in content_data (or tag for Student Movement)
         - Check if user's role has access to that folder
+        - student_admin: access only to Student Movement entries
         - Superadmins have access to all folders (unless they've assumed a different role)
         """
         if not entries:
             return entries
         
         # Superadmins can access everything ONLY if their effective role is superadmin
-        # If they've assumed a different role (e.g., viewer), respect that restriction
         if user_role == 'superadmin':
             logger.debug("Superadmin role detected - allowing access to all entries")
             return entries
+        
+        # student_admin: only Student Movement entries (uploaded via Telegram)
+        if user_role == 'student_admin':
+            filtered = [e for e in entries if self._is_student_movement_entry(e)]
+            logger.debug(f"student_admin: {len(filtered)}/{len(entries)} Student Movement entries")
+            return filtered
         
         filtered_entries = []
         stats = {
@@ -2355,52 +2114,46 @@ Provide a direct, concise answer based only on the information above. If the doc
             
             if not drive_folder_id:
                 # Entry doesn't have folder info (e.g., manual upload)
-                # SECURITY: Deny access to viewers for entries without folder info
-                # Only allow relief_member, admin, superadmin
+                # relief_member, admin have access; viewers do not
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['no_folder_id'] += 1
                 else:
                     stats['role_denied'] += 1
-                    logger.debug(f"Entry {entry.get('id')} has no drive_folder_id - denying access to viewer")
                 continue
             
             # Get folder from database
             folder = db.get_folder_by_drive_id(drive_folder_id)
             if not folder:
-                # Folder not in database (legacy entries)
-                # Only allow access to relief_member, admin, superadmin (not viewers)
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['folder_not_found'] += 1
                 else:
                     stats['role_denied'] += 1
-                    logger.debug(f"Folder {drive_folder_id} not found in database - denying access to viewer")
+                continue
+            
+            # Today's Event folder: accessible to everyone (viewers included)
+            if folder.get('folder_name') == "Today's Event":
+                filtered_entries.append(entry)
+                stats['role_allowed'] += 1
                 continue
             
             # Check if user's role has access to this folder
             folder_with_roles = db.get_folder_with_roles(folder['id'])
             if not folder_with_roles or not folder_with_roles.get('roles'):
-                # No role restrictions set - default access rules:
-                # relief_member, admin, superadmin have access by default
-                # viewers do NOT have access unless explicitly granted
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['no_roles_set'] += 1
                 else:
                     stats['role_denied'] += 1
-                    logger.debug(f"Folder '{folder['folder_name']}' has no roles set - denying access to viewer")
                 continue
             
-            # Check if user's role is in the allowed roles
-            # roles is already a list of strings from get_folder_with_roles
             allowed_roles = folder_with_roles.get('roles', [])
             if user_role in allowed_roles:
                 filtered_entries.append(entry)
                 stats['role_allowed'] += 1
             else:
                 stats['role_denied'] += 1
-                logger.debug(f"Role '{user_role}' not in allowed roles {allowed_roles} for folder '{folder['folder_name']}'")
         
         logger.info(f"Filter stats for role '{user_role}': {stats}")
         return filtered_entries
@@ -2433,8 +2186,34 @@ Provide a direct, concise answer based only on the information above. If the doc
 
         return "\n\n".join(context_parts)
 
+    def _filter_entries_by_today_menu(self, entries, menu_key):
+        """Filter entries for a specific /today menu option."""
+        if menu_key == "relief":
+            return [e for e in entries if e.get("tag") == "RELIEF" or self._entry_folder_contains(e, "Relief")]
+        if menu_key == "weekly_bulletin":
+            return [e for e in entries if self._entry_folder_contains(e, "Weekly Bulletin")]
+        if menu_key == "student_movement":
+            return [e for e in entries if self._is_student_movement_entry(e)]
+        if menu_key == "this_week_ctss":
+            # This Week@CTSS: Weekly Bulletin content (same as weekly bulletin)
+            return [e for e in entries if self._entry_folder_contains(e, "Weekly Bulletin")]
+        if menu_key == "event":
+            return [e for e in entries if e.get("tag") == "EVENT" or self._entry_folder_contains(e, "Today's Event")]
+        return entries
+
+    def _entry_folder_contains(self, entry, folder_substring):
+        """Check if entry's folder contains the given substring."""
+        content = entry.get("content", {})
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                content = {}
+        folder = content.get("folder", "") if isinstance(content, dict) else ""
+        return folder_substring.lower() in (folder or "").lower()
+
     async def today_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show today's entry counts by category with option to view summary"""
+        """Show today's menu with clickable options: Relief, Weekly Bulletin, Student Movement, This Week@CTSS, Event"""
         user_id = update.effective_user.id
         user = db.get_user(user_id)
 
@@ -2443,9 +2222,6 @@ Provide a direct, concise answer based only on the information above. If the doc
             return
 
         all_entries = db.get_today_entries()
-
-        # Filter entries based on folder access rules
-        # Use effective role (respects role assumptions)
         user_role = user.get("role", "viewer")
         entries = self._filter_entries_by_folder_access(all_entries, user_role)
 
@@ -2453,35 +2229,30 @@ Provide a direct, concise answer based only on the information above. If the doc
             await update.message.reply_text("📭 No information accessible for your role today.")
             return
 
-        # Count by tag
-        tag_counts = {}
-        for entry in entries:
-            tag = entry["tag"]
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
-
-        # Include Singapore date/time so "today" is unambiguous
         sgt_str = get_singapore_date_time_str()
-        summary = f"📊 *TODAY'S INFORMATION* ({sgt_str})\n\n"
-        
-        # Build category list and buttons for categories with entries
+        message = f"📊 *TODAY'S INFORMATION* ({sgt_str})\n\n"
+        message += "Select a category for more details:\n\n"
+
+        # Menu options: Today's Relief, Today@Weekly Bulletin, Today's Student Movement, This Week@CTSS, Today's Event
+        menu_options = [
+            ("relief", "Today's Relief"),
+            ("weekly_bulletin", "Today@Weekly Bulletin"),
+            ("student_movement", "Today's Student Movement"),
+            ("this_week_ctss", "This Week@CTSS"),
+            ("event", "Today's Event"),
+        ]
+
         buttons = []
-        for tag in TAGS:
-            count = tag_counts.get(tag, 0)
-            emoji = "✅" if count > 0 else "⚪️"
-            summary += f"{emoji} {tag}: {count} entries\n"
-            
-            # Add button for categories that have entries
-            if count > 0:
-                buttons.append([InlineKeyboardButton(f"📋 {tag} Summary", callback_data=f"summary_{tag}")])
+        for key, label in menu_options:
+            filtered = self._filter_entries_by_today_menu(entries, key)
+            count = len(filtered)
+            emoji = "📋" if count > 0 else "⚪️"
+            buttons.append([InlineKeyboardButton(f"{emoji} {label} ({count})", callback_data=f"summary_{key}")])
 
-        summary += f"\n*Total: {len(entries)} entries*"
-        
-        # Add "All Categories" summary button if there are entries
-        buttons.append([InlineKeyboardButton("📝 Full Summary (All Categories)", callback_data="summary_ALL")])
-        
+        buttons.append([InlineKeyboardButton("📝 Full Summary (All)", callback_data="summary_ALL")])
+
         keyboard = InlineKeyboardMarkup(buttons)
-
-        await update.message.reply_text(summary, parse_mode="Markdown", reply_markup=keyboard)
+        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
     async def handle_summary_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle callback when user clicks a summary button"""
@@ -2502,16 +2273,27 @@ Provide a direct, concise answer based only on the information above. If the doc
         await query.edit_message_text("🔍 Generating summary... Please wait.")
         
         # Get entries and filter by folder access
-        # Use effective role (respects role assumptions)
         all_entries = db.get_today_entries()
         user_role = user.get("role", "viewer")
         entries = self._filter_entries_by_folder_access(all_entries, user_role)
         
         if category != "ALL":
-            entries = [e for e in entries if e["tag"] == category]
+            if category in ("relief", "weekly_bulletin", "student_movement", "this_week_ctss", "event"):
+                entries = self._filter_entries_by_today_menu(entries, category)
+            elif category in TAGS:
+                entries = [e for e in entries if e.get("tag") == category]
+            else:
+                entries = []
         
         if not entries:
-            await query.edit_message_text(f"📭 No entries found for {category}.")
+            category_label = {
+                "relief": "Today's Relief",
+                "weekly_bulletin": "Today@Weekly Bulletin",
+                "student_movement": "Today's Student Movement",
+                "this_week_ctss": "This Week@CTSS",
+                "event": "Today's Event",
+            }.get(category, category)
+            await query.edit_message_text(f"📭 No entries found for {category_label}.")
             return
         
         # Build context for Claude
@@ -2545,10 +2327,17 @@ Provide a summary of the main points:"""
             summary_text = response.content[0].text
             
             # Format response
+            category_labels = {
+                "relief": "Today's Relief",
+                "weekly_bulletin": "Today@Weekly Bulletin",
+                "student_movement": "Today's Student Movement",
+                "this_week_ctss": "This Week@CTSS",
+                "event": "Today's Event",
+            }
             if category == "ALL":
                 header = "📝 *FULL SUMMARY - ALL CATEGORIES*\n\n"
             else:
-                header = f"📋 *SUMMARY - {category}*\n\n"
+                header = f"📋 *{category_labels.get(category, category)}*\n\n"
             
             await query.edit_message_text(
                 f"{header}{summary_text}",
@@ -2806,7 +2595,7 @@ Provide a summary of the main points:"""
 
         message = "👥 <b>REGISTERED USERS</b>\n\n"
 
-        for role in ["superadmin", "admin", "relief_member", "viewer"]:
+        for role in ["superadmin", "admin", "relief_member", "student_admin", "viewer"]:
             if role in role_groups:
                 message += f"<b>{role.upper()}:</b>\n"
                 for u in role_groups[role]:
@@ -2838,7 +2627,7 @@ Provide a summary of the main points:"""
             target_user_id = int(context.args[0])
             new_role = context.args[1].lower()
 
-            if new_role not in ["viewer", "relief_member", "admin"]:
+            if new_role not in ["viewer", "relief_member", "admin", "student_admin"]:
                 await update.message.reply_text(
                     "❌ Invalid role. Use: viewer, uploader, or uploadadmin"
                 )
@@ -2911,6 +2700,7 @@ Provide a summary of the main points:"""
         message += f"• Super Admins: {stats['superadmins']}\n"
         message += f"• Admins: {stats.get('admin', 0)}\n"
         message += f"• Relief Members: {stats.get('relief_member', 0)}\n"
+        message += f"• Student Admins: {stats.get('student_admin', 0)}\n"
         message += f"• Viewers: {stats['viewers']}\n\n"
         message += f"Today's Entries: {stats['today_entries']}"
 
@@ -3028,7 +2818,7 @@ Provide a summary of the main points:"""
                     role = parts[2].strip().lower()
                     
                     # Validate role
-                    if role not in ['viewer', 'relief_member', 'admin']:
+                    if role not in ['viewer', 'relief_member', 'admin', 'student_admin']:
                         errors.append(f"Line {i}: Invalid role '{role}'")
                         continue
                     
@@ -3191,125 +2981,155 @@ Provide a summary of the main points:"""
             except Exception as e:
                 logger.error(f"Failed to notify admin {admin_id}: {e}")
 
-    async def morning_drive_sync_job(self, context: ContextTypes.DEFAULT_TYPE):
-        """Morning job to sync all configured folders from Google Drive"""
+    def _is_todays_event_pdf(self, filename: str):
+        """
+        Check if filename matches dd_mm_yy_eventname.pdf or dd_mm_yyyy_eventname.pdf
+        and the date in the filename matches today.
+        Returns (is_match, event_name or None).
+        """
+        import re
+        if not filename or not filename.lower().endswith('.pdf'):
+            return False, None
+        m = re.match(r'^(\d{2})_(\d{2})_(\d{2,4})_(.+)\.pdf$', filename, re.IGNORECASE)
+        if not m:
+            return False, None
+        dd, mm, yy_or_yyyy, eventname = m.groups()
+        try:
+            day = int(dd)
+            month = int(mm)
+            if len(yy_or_yyyy) == 2:
+                year = 2000 + int(yy_or_yyyy)
+            else:
+                year = int(yy_or_yyyy)
+            today = get_singapore_now().date()
+            if (day, month, year) == (today.day, today.month, today.year):
+                return True, eventname.strip('_').replace('_', ' ')
+            return False, None
+        except (ValueError, TypeError):
+            return False, None
+
+    async def sync_folder_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Scheduled job to sync a single folder from Google Drive. Uses context.job.data['folder_name']."""
         if not self.drive_sync:
-            logger.info("Google Drive sync not available, skipping morning sync")
             return
         
-        logger.info("Running morning Drive sync job...")
-        
-        # Get all configured folders
-        all_folders = db.get_all_folders()
-        
-        if not all_folders:
-            logger.info("No folders configured for sync")
+        folder_name = context.job.data.get('folder_name') if context.job.data else None
+        if not folder_name:
+            logger.warning("sync_folder_job: no folder_name in job data")
             return
         
-        # Use first superadmin as the sync user (system sync)
         sync_user_id = SUPER_ADMIN_IDS[0] if SUPER_ADMIN_IDS else None
-        
         if not sync_user_id:
-            logger.warning("No superadmin IDs configured, cannot run system sync")
             return
         
-        total_files = 0
-        total_processed = 0
+        folder = db.get_folder_by_name(folder_name)
+        if not folder:
+            # Try to discover folder from Drive
+            drive_folder = self.drive_sync.get_folder_by_name(folder_name)
+            if drive_folder:
+                db.add_or_update_drive_folder(
+                    folder_name=folder_name,
+                    drive_folder_id=drive_folder['id'],
+                    parent_folder_id=GOOGLE_DRIVE_ROOT_FOLDER_ID
+                )
+                folder = db.get_folder_by_name(folder_name)
         
-        for folder in all_folders:
-            try:
-                folder_name = folder['folder_name']
-                drive_folder_id = folder['drive_folder_id']
-                
-                logger.info(f"Syncing folder: {folder_name}")
-                
-                # List files in folder
-                files = self.drive_sync.list_files_in_folder(drive_folder_id)
-                
-                if not files:
-                    continue
-                
-                files_synced = len(files)
-                files_processed_count = 0
-                errors = []
-                
-                for file in files:
-                    try:
-                        # Get file content
-                        file_content = self.drive_sync.get_file_content(file)
-                        
-                        if not file_content:
-                            errors.append(f"{file['name']}: Failed to download")
-                            continue
-                        
-                        # Detect category
-                        category = self.drive_sync.detect_file_category(file['name'], folder_name)
-                        
-                        # Process based on file type
-                        extracted_text = ""
-                        file_type = "document"
-                        
-                        if file.get('mimeType', '').startswith('image/'):
-                            extracted_text = self.analyze_image(file_content, category)
-                            file_type = "photo"
-                        elif file.get('mimeType', '') == 'application/pdf' or file['name'].lower().endswith('.pdf'):
+        if not folder:
+            logger.warning(f"sync_folder_job: folder '{folder_name}' not found")
+            return
+        
+        drive_folder_id = folder['drive_folder_id']
+        logger.info(f"Running scheduled sync for folder: {folder_name}")
+        
+        try:
+            files = self.drive_sync.list_files_in_folder(drive_folder_id)
+            if not files:
+                db.update_folder_sync_time(folder['id'])
+                db.log_sync(folder_id=folder['id'], files_synced=0, files_processed=0, errors=None, synced_by=sync_user_id)
+                return
+            
+            # Today's Event: only process PDFs with dd_mm_yy_eventname.pdf where date = today
+            if folder_name == "Today's Event":
+                today = get_singapore_now().date()
+                filtered_files = []
+                for f in files:
+                    name = f.get('name', '')
+                    is_match, event_name = self._is_todays_event_pdf(name)
+                    if is_match:
+                        f['_event_name'] = event_name
+                        filtered_files.append(f)
+                files = filtered_files
+                logger.info(f"Today's Event: {len(filtered_files)} PDF(s) match today's date ({today})")
+            
+            files_processed_count = 0
+            errors = []
+            for file in files:
+                try:
+                    file_content = self.drive_sync.get_file_content(file)
+                    if not file_content:
+                        errors.append(f"{file['name']}: Failed to download")
+                        continue
+                    
+                    category = self.drive_sync.detect_file_category(file['name'], folder_name)
+                    extracted_text = ""
+                    file_type = "document"
+                    
+                    if file.get('mimeType', '').startswith('image/'):
+                        extracted_text = self.analyze_image(file_content, category)
+                        file_type = "photo"
+                    elif file.get('mimeType', '') == 'application/pdf' or file['name'].lower().endswith('.pdf'):
+                        extracted_text = self.analyze_pdf(file_content, category)
+                    elif file.get('mimeType', '').startswith('text/'):
+                        try:
+                            extracted_text = file_content.decode('utf-8')
+                        except:
+                            extracted_text = file_content.decode('latin-1')
+                    elif file.get('mimeType', '') == 'application/vnd.google-apps.spreadsheet':
+                        try:
+                            extracted_text = file_content.decode('utf-8')
+                        except:
+                            extracted_text = file_content.decode('latin-1')
+                    else:
+                        if file_content[:4] == b'%PDF':
                             extracted_text = self.analyze_pdf(file_content, category)
-                            file_type = "document"
-                        elif file.get('mimeType', '').startswith('text/'):
+                        else:
                             try:
                                 extracted_text = file_content.decode('utf-8')
                             except:
-                                extracted_text = file_content.decode('latin-1')
-                            file_type = "document"
-                        else:
-                            if file_content[:4] == b'%PDF':
-                                extracted_text = self.analyze_pdf(file_content, category)
-                            else:
-                                try:
-                                    extracted_text = file_content.decode('utf-8')
-                                except:
-                                    extracted_text = f"[Binary file: {file['name']}]"
-                        
-                        # Save to database (upsert by drive_file_id: one entry per file per day)
-                        content_data = {
-                            "type": file_type,
-                            "file_name": file['name'],
-                            "extracted_text": extracted_text,
-                            "source": "google_drive_auto",
-                            "folder": folder_name,
-                            "drive_folder_id": drive_folder_id,
-                            "drive_file_id": file.get('id'),
-                        }
-                        if content_data.get("drive_file_id"):
-                            db.add_or_update_drive_entry(sync_user_id, category, content_data)
-                        else:
-                            db.add_entry(sync_user_id, category, content_data)
-                        files_processed_count += 1
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing file {file['name']}: {e}")
-                        errors.append(f"{file['name']}: {str(e)}")
-                
-                # Update sync time
-                db.update_folder_sync_time(folder['id'])
-                
-                # Log sync
-                error_str = "; ".join(errors[-10:]) if errors else None
-                db.log_sync(
-                    folder_id=folder['id'],
-                    files_synced=files_synced,
-                    files_processed=files_processed_count,
-                    errors=error_str,
-                    synced_by=sync_user_id
-                )
-                
-                total_files += files_synced
-                total_processed += files_processed_count
-                
-            except Exception as e:
-                logger.error(f"Error syncing folder {folder.get('folder_name', 'unknown')}: {e}")
-        
-        logger.info(f"Morning sync complete: {total_processed}/{total_files} files processed")
+                                extracted_text = f"[Binary file: {file['name']}]"
+                    
+                    content_data = {
+                        "type": file_type,
+                        "file_name": file['name'],
+                        "extracted_text": extracted_text,
+                        "source": "google_drive_scheduled",
+                        "folder": folder_name,
+                        "drive_folder_id": drive_folder_id,
+                        "drive_file_id": file.get('id'),
+                    }
+                    if folder_name == "Today's Event" and file.get('_event_name'):
+                        content_data["event_name"] = file['_event_name']
+                    if content_data.get("drive_file_id"):
+                        db.add_or_update_drive_entry(sync_user_id, category, content_data)
+                    else:
+                        db.add_entry(sync_user_id, category, content_data)
+                    files_processed_count += 1
+                except Exception as e:
+                    logger.error(f"Error processing file {file['name']}: {e}")
+                    errors.append(f"{file['name']}: {str(e)}")
+            
+            db.update_folder_sync_time(folder['id'])
+            error_str = "; ".join(errors[-10:]) if errors else None
+            db.log_sync(
+                folder_id=folder['id'],
+                files_synced=len(files),
+                files_processed=files_processed_count,
+                errors=error_str,
+                synced_by=sync_user_id
+            )
+            logger.info(f"Scheduled sync complete for {folder_name}: {files_processed_count}/{len(files)} files")
+        except Exception as e:
+            logger.error(f"Error syncing folder {folder_name}: {e}", exc_info=True)
 
     def setup_handlers(self):
         """Setup all command and message handlers"""
@@ -3390,8 +3210,6 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("sync", self.sync_drive))
         self.app.add_handler(CommandHandler("drivefolder", self.drive_folder_info))
         self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
-        self.app.add_handler(CommandHandler("registerwebhook", self.register_webhook))
-        self.app.add_handler(CommandHandler("webhookstatus", self.webhook_status))
         self.app.add_handler(CommandHandler("assume", self.assume_role))
         self.app.add_handler(CommandHandler("resume", self.resume_role))
         # Hidden super admin commands
@@ -3463,51 +3281,21 @@ Provide a summary of the main points:"""
             name="relief_reminders",
         )
 
-        # Schedule morning Drive sync
+        # Schedule per-folder Drive sync (Relief Committee 6pm, Relief Timetable/Weekly Bulletin 7:45am)
+        # Student Movement is uploaded via Telegram only - no Drive sync
         if self.drive_sync:
-            job_queue.run_daily(
-                self.morning_drive_sync_job,
-                time=time(hour=DRIVE_SYNC_HOUR, minute=0),
-                name="morning_drive_sync",
-            )
-            logger.info(f"Morning Drive sync scheduled for {DRIVE_SYNC_HOUR}:00")
-            
-            # Schedule webhook auto-renewal (check every 6 hours)
-            job_queue.run_repeating(
-                self.webhook_renewal_job,
-                interval=21600,  # 6 hours
-                first=300,  # Start after 5 minutes
-                name="webhook_renewal",
-            )
-            logger.info("Webhook auto-renewal scheduled (every 6 hours)")
+            for folder_name, (hour, minute) in SYNC_SCHEDULE.items():
+                job_queue.run_daily(
+                    self.sync_folder_job,
+                    time=time(hour=hour, minute=minute),
+                    name=f"sync_{folder_name.replace(' ', '_')}",
+                    data={"folder_name": folder_name},
+                )
+                logger.info(f"Drive sync scheduled for {folder_name} at {hour:02d}:{minute:02d} SGT")
 
         logger.info("Bot started successfully!")
 
-        # Start webhook server in background thread if configured
-        from config import WEBHOOK_URL
-        webhook_port = os.getenv('PORT', '5000')
-        
-        if WEBHOOK_URL:
-            try:
-                from webhook_handler import webhook_app, set_bot_instance, set_analysis_functions
-                import threading
-                
-                # Set bot instance for webhook handler
-                set_bot_instance(self, self.drive_sync)
-                set_analysis_functions(self.analyze_image, self.analyze_pdf)
-                
-                # Start Flask server in background thread
-                # Railway provides PORT env var (typically 8080)
-                def run_webhook_server():
-                    webhook_app.run(host='0.0.0.0', port=int(webhook_port), debug=False, use_reloader=False)
-                
-                webhook_thread = threading.Thread(target=run_webhook_server, daemon=True)
-                webhook_thread.start()
-                logger.info(f"Webhook server started on port {webhook_port} (Railway PORT env var)")
-            except Exception as e:
-                logger.warning(f"Failed to start webhook server: {e}")
-
-        # Start polling (this blocks, but Flask runs in background thread)
+        # Start polling
         # Add error handling for network issues (use time_module to avoid shadowing datetime.time)
         import time as time_module
         max_retries = 3

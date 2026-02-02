@@ -433,13 +433,13 @@ Text to parse:
         help_text += "*Information & Queries:*\n"
         help_text += "/ask [question] - Ask questions about today's information\n"
         help_text += "  • Example: /ask Who's teaching 3A at 10am?\n"
-        help_text += "/today - View all categories and entry counts for today\n\n"
+        help_text += "/today - View menu: Relief, Weekly Bulletin, Student Movement, This Week@CTSS, Event\n"
+        help_text += "  • Click a category for more details\n\n"
 
         # Show role-specific help links
         if role == "student_admin":
-            help_text += "*Student Movement Admin:*\n"
-            help_text += "/upload - Upload Student Movement information\n"
-            help_text += "  • Use Remove menu to clear all Student Movement for today\n"
+            help_text += "*Additional Help:*\n"
+            help_text += "/helpstudent - Student Movement admin commands\n"
         elif role == "relief_member":
             help_text += "*Additional Help:*\n"
             help_text += "/helprelief - Relief member specific commands\n"
@@ -451,6 +451,64 @@ Text to parse:
         help_text += "\n/help - Show this help message"
 
         await update.message.reply_text(help_text, parse_mode="Markdown")
+
+    async def helpstudent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show student admin help - for student_admin role"""
+        try:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
+
+            if not user:
+                await update.message.reply_text(
+                    "You're not registered. Use /start to begin."
+                )
+                return
+
+            # Show help to all users, but indicate if they don't have access
+            has_access = user["role"] == "student_admin"
+            
+            if not has_access:
+                help_text = "📋 *STUDENT MOVEMENT ADMIN HELP*\n\n"
+                help_text += "❌ *You don't have access to these commands.*\n\n"
+                help_text += "These commands are available to:\n"
+                help_text += "• student\\_admin\n\n"
+                help_text += "Use /help to see commands available to your role."
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+                return
+
+            help_text = "📋 *STUDENT MOVEMENT ADMIN HELP*\n\n"
+            help_text += "*Your Role:*\n"
+            help_text += "You can upload and manage Student Movement information only.\n\n"
+            help_text += "*Upload:*\n"
+            help_text += "/upload - Upload Student Movement information\n"
+            help_text += "  • Photos, PDFs, documents, or text\n"
+            help_text += "  • Category is automatically Student Movement\n\n"
+            help_text += "*Remove:*\n"
+            help_text += "From the /upload menu:\n"
+            help_text += "  • *Remove One Student Movement* - Delete a specific entry\n"
+            help_text += "  • *Remove All Student Movement* - Clear all Student Movement for today\n\n"
+            help_text += "*Query:*\n"
+            help_text += "/ask [question] - Ask about Student Movement information\n"
+            help_text += "/today - View today's menu (you see Student Movement only)\n"
+            help_text += "  • Click *Today's Student Movement* for details\n\n"
+            help_text += "*Note:*\n"
+            help_text += "• Student Movement is uploaded via Telegram only (no Google Drive sync)\n"
+            help_text += "• To edit: remove the entry and upload a new one with corrected information\n\n"
+            help_text += "*Other Commands:*\n"
+            help_text += "/help - View general help commands\n"
+
+            try:
+                await update.message.reply_text(help_text, parse_mode="Markdown")
+            except Exception as parse_error:
+                logger.warning(f"Markdown parse error in helpstudent, using plain text: {parse_error}")
+                help_text_plain = help_text.replace("*", "").replace("_", "").replace("\\", "")
+                await update.message.reply_text(help_text_plain)
+        except Exception as e:
+            logger.error(f"Error in helpstudent: {e}", exc_info=True)
+            try:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+            except:
+                pass
 
     async def helprelief(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show relief member help"""
@@ -487,7 +545,8 @@ Text to parse:
             
             help_text += "*Google Drive Access:*\n"
             help_text += "/sync - Sync files from Google Drive folders\n"
-            help_text += "  • Downloads and processes files from accessible folders\n"
+            help_text += "  • Relief Committee 6pm, Relief Timetable/Weekly Bulletin 7:45am\n"
+            help_text += "  • Today's Event 7am (PDFs: dd\\_mm\\_yy\\_eventname)\n"
             help_text += "/syncstatus - View sync history for today\n\n"
             
             help_text += "*General Commands:*\n"
@@ -554,8 +613,10 @@ Text to parse:
             
             help_text += "*Google Drive Management:*\n"
             help_text += "/sync - Sync files from accessible Google Drive folders\n"
+            help_text += "  • Relief Committee 6pm, Relief Timetable/Weekly Bulletin 7:45am\n"
+            help_text += "  • Today's Event 7am (PDFs: dd\\_mm\\_yy\\_eventname)\n"
             help_text += "/listfolders - View all folders and their access configuration\n"
-            help_text += "/drivefolder - View connected Google Drive folder information\n"
+            help_text += "/drivefolder - View connected Google Drive folder and sync schedule\n"
             help_text += "/syncstatus - View sync history and status\n"
             
             if user["role"] == "superadmin":
@@ -569,6 +630,7 @@ Text to parse:
             help_text += "*Other Commands:*\n"
             help_text += "/help - View general help commands\n"
             help_text += "/helprelief - View relief management commands\n"
+            help_text += "/helpstudent - View student admin commands\n"
             
             if user["role"] == "superadmin":
                 help_text += "/helpsuper - View super admin commands\n"
@@ -628,7 +690,8 @@ Text to parse:
             help_text += "  • Example: /setfolder Relief Timetable admin,relief\\_member\n"
             help_text += "  • Available roles: viewer, relief\\_member, admin, superadmin\n"
             help_text += "/listfolders - View all folders and their access configuration\n"
-            help_text += "  • Folders sync on schedule (Relief Committee 6pm, others 7:45am)\n\n"
+            help_text += "  • Relief Committee 6pm, Relief Timetable/Weekly Bulletin 7:45am\n"
+            help_text += "  • Today's Event 7am (PDFs: dd\\_mm\\_yy\\_eventname)\n\n"
             help_text += "*Testing & Debugging:*\n"
             help_text += "/assume [role] - Assume a different role for testing\n"
             help_text += "  • Roles: viewer, relief\\_member, admin, student\\_admin\n"
@@ -640,7 +703,8 @@ Text to parse:
             help_text += "*Other Commands:*\n"
             help_text += "/help - View general help commands\n"
             help_text += "/helprelief - View relief management commands\n"
-            help_text += "/helpadmin - View admin management commands\n\n"
+            help_text += "/helpadmin - View admin management commands\n"
+            help_text += "/helpstudent - View student admin commands\n\n"
             help_text += f"Your account (ID: {user_id}) is protected and cannot be removed."
 
             try:
@@ -3189,6 +3253,7 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("help", self.help_command))
         self.app.add_handler(CommandHandler("helprelief", self.helprelief))
         self.app.add_handler(CommandHandler("helpadmin", self.helpadmin))
+        self.app.add_handler(CommandHandler("helpstudent", self.helpstudent))
         self.app.add_handler(CommandHandler("helpsuper", self.helpsuper))
         self.app.add_handler(upload_conv)
         self.app.add_handler(mass_upload_conv)

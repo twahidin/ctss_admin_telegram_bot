@@ -51,13 +51,23 @@ class DriveSync:
             parent_folder_id = self.root_folder_id
 
         try:
-            results = self.service.files().list(
-                q=f"'{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                fields="files(id, name, mimeType)",
-                pageSize=100
-            ).execute()
-
-            folders = results.get('files', [])
+            folders = []
+            page_token = None
+            while True:
+                kwargs = {
+                    "q": f"'{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                    "fields": "nextPageToken, files(id, name, mimeType)",
+                    "pageSize": 100,
+                    "supportsAllDrives": True,
+                    "includeItemsFromAllDrives": True,
+                }
+                if page_token:
+                    kwargs["pageToken"] = page_token
+                results = self.service.files().list(**kwargs).execute()
+                folders.extend(results.get('files', []))
+                page_token = results.get('nextPageToken')
+                if not page_token:
+                    break
             logger.info(f"Found {len(folders)} folders in {parent_folder_id}")
             return folders
 
@@ -81,27 +91,32 @@ class DriveSync:
         """
         try:
             all_files = []
+            page_token = None
+            while True:
+                kwargs = {
+                    "q": f"'{folder_id}' in parents and trashed=false",
+                    "fields": "nextPageToken, files(id, name, mimeType, size, modifiedTime, parents)",
+                    "pageSize": 100,
+                    "supportsAllDrives": True,
+                    "includeItemsFromAllDrives": True,
+                }
+                if page_token:
+                    kwargs["pageToken"] = page_token
+                results = self.service.files().list(**kwargs).execute()
+                items = results.get('files', [])
+                page_token = results.get('nextPageToken')
             
-            # List files directly in this folder
-            results = self.service.files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
-                fields="files(id, name, mimeType, size, modifiedTime, parents)",
-                pageSize=100
-            ).execute()
-
-            items = results.get('files', [])
+                for item in items:
+                    mime_type = item.get('mimeType', '')
+                    # If it's a folder and recursive, get files from it
+                    if mime_type == 'application/vnd.google-apps.folder' and recursive:
+                        subfolder_files = self.list_files_in_folder(item['id'], recursive=True)
+                        all_files.extend(subfolder_files)
+                    elif mime_type != 'application/vnd.google-apps.folder':
+                        all_files.append(item)
             
-            for item in items:
-                mime_type = item.get('mimeType', '')
-                
-                # If it's a folder and recursive, get files from it
-                if mime_type == 'application/vnd.google-apps.folder' and recursive:
-                    subfolder_files = self.list_files_in_folder(item['id'], recursive=True)
-                    all_files.extend(subfolder_files)
-                elif mime_type != 'application/vnd.google-apps.folder':
-                    # It's a file, add it
-                    all_files.append(item)
-            
+                if not page_token:
+                    break
             if not recursive:
                 logger.info(f"Found {len(all_files)} files in folder {folder_id}")
             return all_files
@@ -118,7 +133,8 @@ class DriveSync:
         try:
             file_metadata = self.service.files().get(
                 fileId=file_id,
-                fields='id, name, parents'
+                fields='id, name, parents',
+                supportsAllDrives=True,
             ).execute()
             
             parents = file_metadata.get('parents', [])
@@ -139,7 +155,8 @@ class DriveSync:
                         # Return the immediate parent folder name
                         folder_info = self.service.files().get(
                             fileId=folder_path[-1],
-                            fields='name'
+                            fields='name',
+                            supportsAllDrives=True,
                         ).execute()
                         return folder_info.get('name', 'Unknown')
                     else:
@@ -148,7 +165,8 @@ class DriveSync:
                 # Get parent folder info
                 parent_info = self.service.files().get(
                     fileId=current_id,
-                    fields='id, name, parents'
+                    fields='id, name, parents',
+                    supportsAllDrives=True,
                 ).execute()
                 
                 folder_path.append(current_id)
@@ -165,7 +183,10 @@ class DriveSync:
     def download_file(self, file_id: str) -> Optional[bytes]:
         """Download a file by ID, returns file content as bytes"""
         try:
-            request = self.service.files().get_media(fileId=file_id)
+            request = self.service.files().get_media(
+                fileId=file_id,
+                supportsAllDrives=True,
+            )
             file_content = io.BytesIO()
             downloader = MediaIoBaseDownload(file_content, request)
             
@@ -241,7 +262,8 @@ class DriveSync:
         try:
             file_metadata = self.service.files().get(
                 fileId=file_id,
-                fields='id, name, mimeType, shortcutDetails'
+                fields='id, name, mimeType, shortcutDetails',
+                supportsAllDrives=True,
             ).execute()
             
             # Check if it's a shortcut
@@ -253,7 +275,8 @@ class DriveSync:
                     # Get target file metadata
                     target_file = self.service.files().get(
                         fileId=target_id,
-                        fields='id, name, mimeType'
+                        fields='id, name, mimeType',
+                        supportsAllDrives=True,
                     ).execute()
                     logger.info(f"Resolved shortcut {file_metadata.get('name')} to target: {target_file.get('name')}")
                     return {

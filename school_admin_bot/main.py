@@ -123,7 +123,7 @@ class SchoolAdminBot:
             return f"[Image analysis failed: {str(e)}]"
 
     def analyze_pdf(self, pdf_data: bytes, category: str) -> str:
-        """Analyze PDF - first try direct text extraction, fall back to image analysis"""
+        """Analyze PDF - extract text and OCR embedded images when possible"""
         try:
             # Open PDF from bytes
             pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
@@ -141,10 +141,30 @@ class SchoolAdminBot:
                     has_text = True
                     all_extracted_text.append(f"--- Page {page_num + 1} ---\n{text}")
             
-            # If we got text directly, use it
-            if has_text and len("\n".join(all_extracted_text)) > 100:
+            # If we got text directly, keep it and also OCR embedded images (if any)
+            combined_text = "\n\n".join(all_extracted_text)
+            image_texts = []
+            max_pages_for_ocr = min(len(pdf_document), 2)
+            for page_num in range(max_pages_for_ocr):
+                page = pdf_document[page_num]
+                images = page.get_images(full=True) or []
+                for img_index, img in enumerate(images):
+                    try:
+                        xref = img[0]
+                        base_image = pdf_document.extract_image(xref)
+                        img_bytes = base_image.get("image")
+                        if not img_bytes:
+                            continue
+                        # OCR embedded image
+                        img_text = self.analyze_image(img_bytes, category)
+                        image_texts.append(f"--- Page {page_num + 1} Image {img_index + 1} ---\n{img_text}")
+                    except Exception as e:
+                        logger.debug(f"PDF image OCR error (page {page_num + 1}): {e}")
+
+            if has_text and len(combined_text) > 100:
                 pdf_document.close()
-                combined_text = "\n\n".join(all_extracted_text)
+                if image_texts:
+                    combined_text = combined_text + "\n\n" + "\n\n".join(image_texts)
                 logger.info(f"Extracted text directly from PDF ({max_pages} pages): {combined_text[:200]}...")
                 return combined_text
             
@@ -2178,7 +2198,7 @@ Provide a direct, concise answer based only on the information above. If the doc
             
             if not drive_folder_id:
                 # Entry doesn't have folder info (e.g., manual upload)
-                # relief_member, admin have access; viewers do not
+                # relief_member, admin have access; viewers do not (manual uploads)
                 if user_role in ['relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['no_folder_id'] += 1
@@ -2189,7 +2209,8 @@ Provide a direct, concise answer based only on the information above. If the doc
             # Get folder from database
             folder = db.get_folder_by_drive_id(drive_folder_id)
             if not folder:
-                if user_role in ['relief_member', 'admin']:
+                # Folder not in DB (e.g. legacy): allow viewer, relief_member, admin
+                if user_role in ['viewer', 'relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['folder_not_found'] += 1
                 else:
@@ -2205,7 +2226,8 @@ Provide a direct, concise answer based only on the information above. If the doc
             # Check if user's role has access to this folder
             folder_with_roles = db.get_folder_with_roles(folder['id'])
             if not folder_with_roles or not folder_with_roles.get('roles'):
-                if user_role in ['relief_member', 'admin']:
+                # No roles set = default: viewers can read all synced folder content
+                if user_role in ['viewer', 'relief_member', 'admin']:
                     filtered_entries.append(entry)
                     stats['no_roles_set'] += 1
                 else:

@@ -32,10 +32,7 @@ class DriveSync:
         # Create credentials
         credentials = service_account.Credentials.from_service_account_info(
             service_account_info,
-            scopes=[
-                'https://www.googleapis.com/auth/drive.readonly',
-                'https://www.googleapis.com/auth/drive.metadata.readonly'
-            ]
+            scopes=['https://www.googleapis.com/auth/drive']
         )
 
         # Build Drive API service

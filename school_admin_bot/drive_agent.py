@@ -6,6 +6,7 @@ Usage:
     result = await agent.run("list files in Relief Committee")
 """
 
+import base64
 import json
 import logging
 from typing import Any
@@ -84,6 +85,28 @@ TOOLS = [
                 "folder_name": {
                     "type": "string",
                     "description": "Folder the file is in (helps disambiguate).",
+                },
+            },
+            "required": ["file_name"],
+        },
+    },
+    {
+        "name": "read_pdf",
+        "description": "Read and extract text content from a PDF file using Claude's native PDF understanding. Returns the extracted text. Use this for PDF files instead of read_file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_name": {
+                    "type": "string",
+                    "description": "Name of the PDF file to read.",
+                },
+                "folder_name": {
+                    "type": "string",
+                    "description": "Folder the PDF is in (helps disambiguate).",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "What to extract from the PDF. E.g. 'Extract all relief entries as a table' or 'List all names and dates'. Defaults to extracting all text.",
                 },
             },
             "required": ["file_name"],
@@ -315,6 +338,7 @@ class DriveAgent:
                 "list_files": self._tool_list_files,
                 "search_files": self._tool_search_files,
                 "read_file": self._tool_read_file,
+                "read_pdf": self._tool_read_pdf,
                 "read_spreadsheet": self._tool_read_spreadsheet,
                 "write_spreadsheet": self._tool_write_spreadsheet,
                 "create_folder": self._tool_create_folder,
@@ -482,6 +506,8 @@ class DriveAgent:
         mime = file.get("mimeType", "")
         if "spreadsheet" in mime:
             return {"error": "This is a spreadsheet. Use read_spreadsheet instead."}
+        if mime == "application/pdf":
+            return {"error": "This is a PDF. Use read_pdf instead."}
 
         # Export Google Docs as plain text
         if mime == "application/vnd.google-apps.document":
@@ -503,6 +529,58 @@ class DriveAgent:
         if len(text) > 4000:
             text = text[:4000] + "\n... (truncated)"
         return {"file_name": file["name"], "content": text}
+
+    async def _tool_read_pdf(self, inp: dict) -> Any:
+        file = self._find_file(inp["file_name"], inp.get("folder_name"))
+        if not file:
+            return {"error": f"File '{inp['file_name']}' not found."}
+
+        mime = file.get("mimeType", "")
+
+        # Download PDF bytes
+        if mime == "application/pdf":
+            content = self.drive.files().get_media(
+                fileId=file["id"], supportsAllDrives=True,
+            ).execute()
+        elif mime == "application/vnd.google-apps.document":
+            # Export Google Doc as PDF
+            content = self.drive.files().export(
+                fileId=file["id"], mimeType="application/pdf",
+            ).execute()
+        else:
+            return {"error": f"File is not a PDF (type: {self._friendly_mime(mime)}). Use read_file or read_spreadsheet instead."}
+
+        if not content:
+            return {"error": "Failed to download file."}
+
+        # Send to Claude as base64 PDF document
+        pdf_b64 = base64.standard_b64encode(content).decode("utf-8")
+        prompt = inp.get("prompt", "Extract all text content from this document. Preserve the structure (tables, lists, headings).")
+
+        response = self.claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4096,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64,
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+
+        extracted = response.content[0].text if response.content else ""
+        # Truncate if very long
+        if len(extracted) > 6000:
+            extracted = extracted[:6000] + "\n... (truncated)"
+        return {"file_name": file["name"], "content": extracted}
 
     async def _tool_read_spreadsheet(self, inp: dict) -> Any:
         file = self._find_file(inp["file_name"], inp.get("folder_name"))

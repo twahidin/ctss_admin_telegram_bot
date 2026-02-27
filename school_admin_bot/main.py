@@ -35,6 +35,7 @@ from telegram.ext import (
 import anthropic
 from database import Database
 from drive_sync import DriveSync
+from drive_agent import DriveAgent
 from config import (
     TELEGRAM_TOKEN,
     CLAUDE_API_KEY,
@@ -71,6 +72,7 @@ class SchoolAdminBot:
         self.app = None
         # Initialize Drive sync (optional, only if configured)
         self.drive_sync = None
+        self.drive_agent = None  # Lazy-init on first /drive use
         try:
             if GOOGLE_DRIVE_ROOT_FOLDER_ID:
                 self.drive_sync = DriveSync()
@@ -632,9 +634,9 @@ Text to parse:
             help_text += "/list - Show all registered users and their roles\n\n"
             
             help_text += "*Google Drive Management:*\n"
+            help_text += "/drive [request] - Natural language Drive agent\n"
+            help_text += "  • e.g. /drive list files in Relief Committee\n"
             help_text += "/sync - Sync files from accessible Google Drive folders\n"
-            help_text += "  • Relief Committee 6pm, Relief Timetable/Weekly Bulletin 7:45am\n"
-            help_text += "  • Today's Event 7am (PDFs: dd\\_mm\\_yy\\_eventname)\n"
             help_text += "/listfolders - View all folders and their access configuration\n"
             help_text += "/drivefolder - View connected Google Drive folder and sync schedule\n"
             help_text += "/syncstatus - View sync history and status\n"
@@ -706,6 +708,8 @@ Text to parse:
             help_text += "/removesuperadmin [user_id] - Remove a super admin\n"
             help_text += "/listsuperadmins - List all super admins\n\n"
             help_text += "*Google Drive Configuration:*\n"
+            help_text += "/drive [request] - Natural language Drive agent\n"
+            help_text += "  • e.g. /drive create a sheet called Roster in Relief Committee\n"
             help_text += "/setfolder Folder Name roles - Configure folder access\n"
             help_text += "  • Example: /setfolder Relief Timetable admin,relief\\_member\n"
             help_text += "  • Available roles: viewer, relief\\_member, admin, superadmin\n"
@@ -1890,6 +1894,51 @@ Text to parse:
             message += f"• {folder_name}: {h:02d}:{m:02d} SGT daily\n"
         
         await update.message.reply_text(message, parse_mode="Markdown")
+
+    async def drive_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Natural language Drive management via Claude agent"""
+        user_id = update.effective_user.id
+        user = db.get_user(user_id)
+
+        if not user or user["role"] not in ["admin", "superadmin"]:
+            await update.message.reply_text("❌ This command is for admins and superadmins only.")
+            return
+
+        if not GOOGLE_DRIVE_ROOT_FOLDER_ID:
+            await update.message.reply_text("❌ Google Drive is not configured.")
+            return
+
+        query = " ".join(context.args) if context.args else ""
+        if not query:
+            await update.message.reply_text(
+                "Please provide a request after /drive.\n\n"
+                "Examples:\n"
+                "• /drive list folders\n"
+                "• /drive show files in Relief Committee\n"
+                "• /drive read Work and Assignments in Relief Timetable\n"
+                "• /drive create a folder called Test in Relief Committee"
+            )
+            return
+
+        thinking_msg = await update.message.reply_text("🤔 Processing your request...")
+
+        try:
+            # Lazy-init the agent
+            if not self.drive_agent:
+                self.drive_agent = DriveAgent()
+
+            result = await self.drive_agent.run(query)
+
+            # Edit the thinking message with the result
+            try:
+                await thinking_msg.edit_text(result, parse_mode="Markdown")
+            except Exception:
+                # Fallback to plain text if Markdown fails
+                await thinking_msg.edit_text(result)
+
+        except Exception as e:
+            logger.error(f"Drive agent error: {e}", exc_info=True)
+            await thinking_msg.edit_text(f"❌ Error: {str(e)}")
 
     async def assume_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Assume a different role for testing (superadmin only)"""
@@ -3296,6 +3345,7 @@ Provide a summary of the main points:"""
         self.app.add_handler(CommandHandler("listfolders", self.list_folders))
         self.app.add_handler(CommandHandler("sync", self.sync_drive))
         self.app.add_handler(CommandHandler("drivefolder", self.drive_folder_info))
+        self.app.add_handler(CommandHandler("drive", self.drive_command))
         self.app.add_handler(CommandHandler("syncstatus", self.sync_status))
         self.app.add_handler(CommandHandler("assume", self.assume_role))
         self.app.add_handler(CommandHandler("resume", self.resume_role))

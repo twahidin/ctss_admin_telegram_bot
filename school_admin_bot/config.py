@@ -72,6 +72,10 @@ REMINDER_MINUTES_BEFORE = 5
 GOOGLE_DRIVE_ROOT_FOLDER_ID = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID", "")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
+# Apps Script Bridge (optional — enables file creation via /drive)
+APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL", "")
+APPS_SCRIPT_SECRET = os.getenv("APPS_SCRIPT_SECRET", "")
+
 # Daily sync schedule per folder: folder_name -> (hour, minute) Singapore time
 # Relief Committee: 6 pm, Relief Timetable / Weekly Bulletin: 7:45 am
 # Today's Event: 7 am - only PDFs named dd_mm_yy_eventname.pdf where date matches today
